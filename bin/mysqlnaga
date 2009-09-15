@@ -1,0 +1,333 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+our $VERSION = '1.0';
+
+use Getopt::Long;
+use File::Spec;
+use Carp;
+use DBI;
+use Pod::Usage;
+
+my $OPTIONS = _parse_options();
+
+my $DB  = $OPTIONS->{database};
+my $LTB = $OPTIONS->{'lines-terminated-by'};
+my $FTB = $OPTIONS->{'fields-terminated-by'};
+my $FEB = $OPTIONS->{'fields-optionally-enclosed-by'};
+my $VERBOSE = $OPTIONS->{verbose};
+
+my $DBH = _open_dbh();
+my @TABLES = _tables();
+
+process_db();
+exit 0;
+
+sub process_db {
+	verbose("Working on database '${DB}'");
+	foreach my $table (_tables()) {
+		_process_table($table);	
+	}
+	_dump_sql();
+	verbose("Finished with database '${DB}'");
+	return;
+}
+
+sub verbose {
+	if($VERBOSE) {
+		print STDERR @_, "\n";	
+	}
+	return;
+}
+
+sub _process_table {
+	my ($table) = @_;
+	
+	verbose("\tWorking on table '${table}'");
+	
+	my $sth = _open_sth($table);
+	verbose("\tSelecting rows");
+	$sth->execute();
+	verbose("\tWriting to file");
+	_write_to_file($sth, $table);
+	
+	$sth->finish();
+	
+	verbose("\tFinished table");
+	return;
+}
+
+sub _parse_options {
+	my @options = qw(
+		directory=s
+		database=s 
+		fields-escaped-by=s 
+		fields-optionally-enclosed-by=s 
+		fields-terminated-by=s 
+		host=s
+		lines-terminated-by=s 
+		password=s
+		port=i
+		tables=s
+		user=s
+		verbose 
+		version 
+		write_header
+		help|? 
+		man
+	);
+	
+	my $opts = {};
+	
+	GetOptions($opts, @options) or pod2usage(2);
+	pod2usage(1) if $opts->{help};
+	pod2usage(-exitstatus => 0, -verbose => 2) if $opts->{man};
+	if($opts->{version}) {
+		print "mysqlnaga version $VERSION\n";
+		exit(0);
+	}
+	_confirm_options($opts);
+	return $opts;
+}
+
+sub _confirm_options {
+	my ($opts) = @_;
+	#TODO Need to add more options here to ensure it works properly ...  think it does
+	
+	if(!$opts->{database}) {
+		print STDERR "Need a schema to dump\n";
+		pod2usage(1);
+	}
+	
+	_optional_set($opts, 'fields-terminated-by',"\t");
+	_optional_set($opts, 'fields-optionally-enclosed-by','');
+	_optional_set($opts, 'lines-terminated-by',"\n");
+	_optional_set($opts, 'directory','.');
+	
+	return;	
+}
+
+sub _optional_set {
+	my ($opts, $key, $default) = @_;	
+	$opts->{$key} = $default unless $opts->{$key};
+	return;
+}
+
+sub _open_dbh {
+	my ($hostname, $port, $user, $password) = (
+		($OPTIONS->{host})     ? ";host=$OPTIONS->{host}" : '',
+		($OPTIONS->{port})     ? ";port=$OPTIONS->{port}" : '',
+		($OPTIONS->{user})     ? $OPTIONS->{user} : undef,
+		($OPTIONS->{password}) ? $OPTIONS->{password} : undef
+	);
+	my $dsn = "DBI:mysql:database=${DB}${hostname}${port}";
+	my $dbh = DBI->connect($dsn, $user, $password, {RaiseError => 1});
+	return $dbh;
+}
+
+sub _tables {
+	my @tables;
+	if($OPTIONS->{tables}) {
+		@tables = split(/,/, $OPTIONS->{tables});
+	}
+	else {
+		my $sth = $DBH->table_info(undef, $OPTIONS->{database}, '%');
+		while(my $row = $sth->fetchrow_arrayref()) {
+			push(@tables, $row->[2]);	
+		}
+		$sth->finish();
+	}
+	return @tables;
+}
+
+sub _open_file {
+	my ($filename) = @_;
+	my $file = File::Spec->catfile($OPTIONS->{directory}, $filename);
+	
+	verbose("\tThe file at location '${file}' will be overwritten") if -f $file;
+	
+	open my $fh, '>', $file or confess("Cannot open '${file}' for writing: $!");
+	return $fh;
+}
+
+sub _columns {
+	my ($sth) = @_;
+	my @columns;
+	for (my $i =0; $i < $sth->{NUM_OF_FIELDS}; $i++) {
+		push(@columns, {name => $sth->{NAME}->[$i], type => $sth->{TYPE}->[$i] });
+	}
+	return @columns;
+}
+
+sub _open_sth {
+	my ($table) = @_;
+	my $sth = $DBH->prepare("select * from ${table}");
+	return $sth;
+}
+
+sub _write_to_file {
+	my ($sth, $table) = @_;
+	
+	my $fh  = _open_file("${table}.txt");
+	
+	my @columns = _columns($sth);
+	my $count = scalar(@columns);
+	my $max_index = $count - 1;
+	
+	my $writer = sub {
+		for (my $i =0; $i < $count; $i++) {
+			my $record = ($_[$i]) ? $_[$i] : '\N';
+			print $fh "${FEB}${record}${FEB}";
+			print $fh $FTB if($i != $max_index);
+		}
+		print $fh $LTB;
+	};
+	
+	if($OPTIONS->{write_header}) {
+		$writer->(map { $_->{name} } @columns);
+	}
+	
+	while (my $row = $sth->fetchrow_arrayref()) {
+		$writer->(@{$row});
+	}
+	
+	close($fh);
+	
+	return;
+}
+
+sub _dump_sql {
+	verbose("\tDumping SQL for schema");
+	
+	my $fh = _open_file("${DB}.sql");
+	
+	foreach my $table (@TABLES) {
+		my $sth = $DBH->prepare("show create table ${table}");
+		$sth->execute();
+		while (my $row = $sth->fetchrow_arrayref()) {
+			print $fh $row->[1], ';', "\n"x2;
+		}
+		$sth->finish();
+	}
+	
+	close $fh;
+}
+
+__END__
+
+=pod
+
+=head1 NAME
+
+mysqlnaga
+
+=head1 SYNOPSIS
+
+	./mysqlnaga -database DB [-directory DIR] [-host HOST] [-port PORT] [-user USER] [-pass PASS] [more options in -h]
+
+=head1 DESCRIPTION
+
+Provides a Pure Perl implementation of mysqldump -T using only core modules
+(with the exception of DBD::mysql). The code will dump an entire database
+to a series of flat files for loading into other target schemas. You can
+specify directories to dump the files to or current working directories are
+assumed.
+
+A secondary file named DB.sql (where DB is the name of your DB) is created
+containing the SQL of all tables dumped. The SQL created is the output
+of the show create table statement & therefore the SQL is only valid for
+DBs compatable with this. mysqldump still has a far richer SQL output
+format.
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--directory>
+
+The directory to dump text files to. If not specified the program will use
+the cwd
+
+=item B<--database>
+
+The database to dump. The only required parameter.
+
+=item B<--fields-escaped-by>
+
+Currently unimplemented as the meaning of it is ambigous in MySQL's documentation
+
+=item B<--fields-optionally-enclosed-by>
+
+The string to use to enclose fields. Only specify one. Defaults to blank
+
+=item B<--fields-terminated-by>
+
+The character(s) to indicate the end of a field. Currently defaults to tab
+
+=item B<--host>
+
+Host the MySQL server is located on
+
+=item B<--lines-terminated-by>
+
+String to indicate the end of a line i.e. the end of a record. Defaults to UNIX
+line end.
+
+=item B<--password>
+
+Password for the target server
+
+=item B<--port>
+
+Port for the server
+
+=item B<--tables>
+
+Tables to dump. If not given then all are assumed
+
+=item B<--user>
+
+User to connect to the DB with
+
+=item B<--verbose>
+
+Print verbose logging messages along with the dump. These go to STDERR
+
+=item B<--version>
+
+Print vesion and exit
+
+=item B<--write_header>
+
+Writes a header line to the file which are the column names.
+
+=item B<--help | --?>
+
+This message
+
+=item B<--man>
+
+Perldoc with more information than -help alone
+
+=back
+
+=head1 DEPENDENCIES
+
+Only DBD::mysql. All others are core Perl modules.
+
+=head1 WHY NAGA
+
+Because the program attempts to be smoking hot at copying databases. Also
+naga is a lot smaller the jalepeno (and easier to remember).
+
+=head1 AUTHOR
+
+Andy Yates
+
+=head1 VERSION
+
+1.0
+
+=cut
