@@ -234,10 +234,27 @@ sub _load {
 		($OPTIONS->{'skip_lines'}) ? 'ignore '.$OPTIONS->{'skip_lines'}.' lines' : q{},
 	);
 	
-	my $sql = sprintf(q{LOAD DATA LOCAL INFILE '%s' %s INTO TABLE %s %s %s %s}, @args);
-	my $sth = $DBH->prepare($sql);
-	$sth->execute();
-	$sth->finish();
+	_toggle_indexes(0);
+	
+	my $ddl = sprintf(q{LOAD DATA LOCAL INFILE '%s' %s INTO TABLE %s %s %s %s}, @args);
+	$DBH->do($ddl);
+	
+	_toggle_indexes(1);
+	
+	return;
+}
+
+sub _toggle_indexes {
+	my ($table, $on) = @_;
+	if($OPTIONS->{'turn-off-indexes'}) {
+		my $cmd = ($on) ? 'ENABLE' : 'DISABLE';
+		verbose("\t\tToggling indexes to '$cmd'");
+		my $ddl = qq{ALTER TABLE $table $cmd KEYS};
+		$DBH->do($ddl);
+	}
+	else {
+		verbose("\t\tNot toggling indexes as '--turn-off-indexes' is off");
+	}
 	return;
 }
 
@@ -335,6 +352,11 @@ Port for the server
 =item B<--tables>
 
 Tables to dump. If not given then all are assumed
+
+=item B<--turn-off-indexes>
+
+Does a bit of optimisation by turning off indexes before loading the files
+which normally helps loading. Keys are turned back on after loading.
 
 =item B<--user>
 
