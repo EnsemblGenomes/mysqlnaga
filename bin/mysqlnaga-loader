@@ -5,11 +5,13 @@ use warnings;
 
 our $VERSION = '1.0';
 
-use Getopt::Long;
-use File::Spec;
 use Carp;
 use DBI;
+use File::Find;
+use File::Spec;
+use Getopt::Long;
 use Pod::Usage;
+use Tie::File;
 
 my $OPTIONS = _parse_options();
 
@@ -20,17 +22,34 @@ my $FEB = $OPTIONS->{'fields-optionally-enclosed-by'};
 my $VERBOSE = $OPTIONS->{verbose};
 
 my $DBH = _open_dbh();
-my @TABLES = _tables();
+my %DB_TABLES = _db_tables();
+my %TABLES;
+
+my ($_record_file) = _find_in_dir(qr/^\.loader\.log$/xms);
+tie my @RECORDS, 'Tie::File', $_record_file or confess("Cannot open file $_record_file : $!");
+my %PROCESSED_RECORDS = _process_records();
 
 process_db();
 exit 0;
 
 sub process_db {
 	verbose("Working on database '${DB}'");
-	foreach my $table (_tables()) {
+	
+	if(scalar(keys %DB_TABLES) == 0) {
+		verbose("\tAbout to load schema");
+		_squirt_sql();
+		%DB_TABLES = _db_tables(); #Have to reload to see what we got from the squirt
+	}
+	else {
+		verbose("\tTables detected in the target schema; not loading the schema file");
+	}
+	
+	%TABLES = _tables();
+	
+	foreach my $table (keys %TABLES) {
 		_process_table($table);	
 	}
-	_dump_sql();
+	
 	verbose("Finished with database '${DB}'");
 	return;
 }
@@ -45,15 +64,20 @@ sub verbose {
 sub _process_table {
 	my ($table) = @_;
 	
+	if($PROCESSED_RECORDS->{$table}) {
+		verbose("\tNot processing $table as it is already in .loader.log. If this is not wrong then remove & rerun");
+		return;
+	}
+	
 	verbose("\tWorking on table '${table}'");
 	
-	my $sth = _open_sth($table);
-	verbose("\tSelecting rows");
-	$sth->execute();
-	verbose("\tWriting to file");
-	_write_to_file($sth, $table);
+	my @files = _find_in_dir(qr/$table/);
+	foreach my $file (@files) {
+		verbose("\t\tLoading $file");
+		_load($table, qr/^$file\./);
+	}
 	
-	$sth->finish();
+	push(@RECORDS, $table);
 	
 	verbose("\tFinished table");
 	return;
@@ -70,11 +94,11 @@ sub _parse_options {
 		lines-terminated-by=s 
 		password=s
 		port=i
+		skip-lines=i
 		tables=s
 		user=s
 		verbose 
 		version 
-		write_header
 		help|? 
 		man
 	);
@@ -85,7 +109,7 @@ sub _parse_options {
 	pod2usage(1) if $opts->{help};
 	pod2usage(-exitstatus => 0, -verbose => 2) if $opts->{man};
 	if($opts->{version}) {
-		print "mysqlnaga version $VERSION\n";
+		print "mysqlnaga-loader version $VERSION\n";
 		exit(0);
 	}
 	_confirm_options($opts);
@@ -94,17 +118,21 @@ sub _parse_options {
 
 sub _confirm_options {
 	my ($opts) = @_;
-	#TODO Need to add more options here to ensure it works properly ...  think it does
 	
 	if(!$opts->{database}) {
 		print STDERR "Need a schema to dump\n";
 		pod2usage(1);
 	}
 	
-	_optional_set($opts, 'fields-terminated-by',"\t");
-	_optional_set($opts, 'fields-optionally-enclosed-by','');
-	_optional_set($opts, 'lines-terminated-by',"\n");
-	_optional_set($opts, 'directory','.');
+	if($opts->{replace} && $opts->{ignore}) {
+		print STDERR "Cannot specify both replace & ignore. Choose one\n";
+		pod2usage(1);
+	}
+	
+	_optional_set($opts, 'fields-terminated-by', "\t");
+	_optional_set($opts, 'fields-optionally-enclosed-by', q{});
+	_optional_set($opts, 'lines-terminated-by', "\n");
+	_optional_set($opts, 'directory', '.');
 	
 	return;	
 }
@@ -127,92 +155,99 @@ sub _open_dbh {
 	return $dbh;
 }
 
-sub _tables {
-	my @tables;
-	if($OPTIONS->{tables}) {
-		@tables = split(/,/, $OPTIONS->{tables});
-	}
-	else {
-		my $sth = $DBH->table_info(undef, $OPTIONS->{database}, '%');
-		while(my $row = $sth->fetchrow_arrayref()) {
-			push(@tables, $row->[2]);	
-		}
-		$sth->finish();
-	}
-	return @tables;
-}
-
-sub _open_file {
-	my ($filename) = @_;
-	my $file = File::Spec->catfile($OPTIONS->{directory}, $filename);
+sub _squirt_sql {
+	my ($self) = @_;
 	
-	verbose("\tThe file at location '${file}' will be overwritten") if -f $file;
-	
-	open my $fh, '>', $file or confess("Cannot open '${file}' for writing: $!");
-	return $fh;
-}
-
-sub _columns {
-	my ($sth) = @_;
-	my @columns;
-	for (my $i =0; $i < $sth->{NUM_OF_FIELDS}; $i++) {
-		push(@columns, {name => $sth->{NAME}->[$i], type => $sth->{TYPE}->[$i] });
-	}
-	return @columns;
-}
-
-sub _open_sth {
-	my ($table) = @_;
-	my $sth = $DBH->prepare("select * from ${table}");
-	return $sth;
-}
-
-sub _write_to_file {
-	my ($sth, $table) = @_;
-	
-	my $fh  = _open_file("${table}.txt");
-	
-	my @columns = _columns($sth);
-	my $count = scalar(@columns);
-	my $max_index = $count - 1;
-	
-	my $writer = sub {
-		for (my $i =0; $i < $count; $i++) {
-			my $record = ($_[$i]) ? $_[$i] : '\N';
-			print $fh "${FEB}${record}${FEB}";
-			print $fh $FTB if($i != $max_index);
-		}
-		print $fh $LTB;
-	};
-	
-	if($OPTIONS->{write_header}) {
-		$writer->(map { $_->{name} } @columns);
+	my ($sql) = _find_in_dir(qr/\.sql/);
+	if(! -f $sql) {
+		confess('No .sql file found and no schema tables detected');
 	}
 	
-	while (my $row = $sth->fetchrow_arrayref()) {
-		$writer->(@{$row});
+	my @args = (
+		$OPTIONS->{database},
+		($OPTIONS->{port}) ? '--port '.$OPTIONS->{port} : q{},
+		($OPTIONS->{user}) ? '--user '.$OPTIONS->{port} : q{},
+		($OPTIONS->{password}) ? '--password '.$OPTIONS->{password} : q{},
+		$sql
+	);
+	my $cmd = sprintf('mysql --host %s %s %s %s < %s', @args);
+	system($cmd);
+	my $exit_value  = $? >> 8;
+	if($exit_value != 0) {
+		confess('Exiting as mysql squirt failed');
 	}
-	
-	close($fh);
-	
 	return;
 }
 
-sub _dump_sql {
-	verbose("\tDumping SQL for schema");
+sub _db_tables {
+	my %tables;
+	my $sth = $DBH->table_info(undef, $OPTIONS->{database}, '%');
+	while(my $row = $sth->fetchrow_arrayref()) {
+		$tables->{$row->[2]} = 1;	
+	}
+	$sth->finish();
+	return %tables;
+}
+
+#Load only the specified tables or all of them in the DB
+sub _tables {
+	my %tables;
+	if($OPTIONS->{tables}) {
+		%tables = map {$_ => 1} split(/,/, $OPTIONS->{tables});
+	}
+	else {
+		%tables = _db_tables();	
+	}
+	return %tables;
+}
+
+sub _find_in_dir {
+	my ($self, $file_regex) = @_;
+	my @files;
+	find(sub {
+		my $file_name = $_;
+		push(@files, $File::Find::name);
+	}, $OPTIONS->{directory});
+	return @files;
+}
+
+sub _load {
+	my ($table, $file) = @_;
 	
-	my $fh = _open_file("${DB}.sql");
-	
-	foreach my $table (@TABLES) {
-		my $sth = $DBH->prepare("show create table ${table}");
-		$sth->execute();
-		while (my $row = $sth->fetchrow_arrayref()) {
-			print $fh $row->[1], ';', "\n"x2;
+	my $field_opts = q{};
+	if($FTB || $FEB) {
+		$field_opts .= 'FIELDS ';
+		if($FTB) {
+			$field_opts .= q{terminated by '}.$FTB.q{' };
 		}
-		$sth->finish();
+		if($FEB}) {
+			$field_opts .= q{optionally enclosed by '}.$FTB.q{' };
+		}
 	}
 	
-	close $fh;
+	my @args = (
+		$file,
+		($OPTIONS->{replace}) ? 'REPLACE' ? ($OPTIONS->{ignore}) 'IGNORE' : q{},
+		$table,
+		$field_opts,
+		qq{lines terminated by '${LTB}'},
+		($OPTIONS->{'skip_lines'}) ? 'ignore '.$OPTIONS->{'skip_lines'}.' lines' : q{},
+	);
+	
+	my $sql = sprintf(q{LOAD DATA LOCAL INFILE '%s' %s INTO TABLE %s %s %s %s}, @args);
+	my $sth = $DBH->prepare($sql);
+	$sth->execute();
+	$sth->finish();
+	return;
+}
+
+sub _process_records {
+	my %records;
+	foreach my $line (@RECORDS) {
+		chomp($line);
+		$records{$line} = 1;
+	}
+	return %records;
 }
 
 __END__
@@ -229,17 +264,19 @@ mysqlnaga
 
 =head1 DESCRIPTION
 
-Provides a Pure Perl implementation of mysqldump -T using only core modules
-(with the exception of DBD::mysql). The code will dump an entire database
-to a series of flat files for loading into other target schemas. You can
-specify directories to dump the files to or current working directories are
-assumed.
+Provides a Pure Perl implementation of mysqlimport using only core modules
+(with the exception of DBD::mysql). This program attempts to load an entire
+directory of files and optionally load a schema in which should be located in
+a single .sql file.
 
-A secondary file named DB.sql (where DB is the name of your DB) is created
-containing the SQL of all tables dumped. The SQL created is the output
-of the show create table statement & therefore the SQL is only valid for
-DBs compatable with this. mysqldump still has a far richer SQL output
-format.
+The program loads the schema (if present) and loops over all known DB tables
+looking for files in the given directory with the same name as the table 
+e.g. table tmp would be used to find files called tmp.txt tmp.001.txt but not
+tmp_table.txt
+
+The script also records what it has done to aid re-runs when connections fail
+under stressful loads. This is called .loader.log which should be edited 
+accordingly when you need to run a new file. 
 
 =head1 OPTIONS
 
@@ -265,6 +302,18 @@ The string to use to enclose fields. Only specify one. Defaults to blank
 =item B<--fields-terminated-by>
 
 The character(s) to indicate the end of a field. Currently defaults to tab
+
+=item B<--replace>
+
+If specified will force records to be replaced with those from the input file on conflicts
+
+=item B<--ignore>
+
+If specified will ignore clashes arising from input files
+
+=item B<--skip-lines>
+
+Will skip the number of given lines per table load
 
 =item B<--host>
 
