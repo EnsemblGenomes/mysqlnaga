@@ -27,11 +27,17 @@ my $DBH = _open_dbh();
 my %DB_TABLES = _db_tables();
 my %TABLES;
 
-my ($_record_file) = _find_in_dir(qr/^\${LOG_FILENAME}$/xms);
+my ($_record_file) = _find_in_dir(qr/^\${LOG_FILENAME}/xms);
+if(! $_record_file) {
+	$_record_file = File::Spec->catfile($OPTIONS{directory}, $LOG_FILENAME);
+}
 tie my @RECORDS, 'Tie::File', $_record_file or confess("Cannot open file $_record_file : $!");
 my %PROCESSED_RECORDS = _process_records();
 
 process_db();
+
+untie @RECORDS;
+
 exit 0;
 
 sub process_db {
@@ -48,7 +54,7 @@ sub process_db {
 	
 	%TABLES = _tables();
 	
-	foreach my $table (keys %TABLES) {
+	foreach my $table (sort keys %TABLES) {
 		_process_table($table);	
 	}
 	
@@ -73,10 +79,10 @@ sub _process_table {
 	
 	verbose("\tWorking on table '${table}'");
 	
-	my @files = _find_in_dir(qr/$table/);
+	my @files = _find_in_dir(qr/^$table\./xms);
 	foreach my $file (@files) {
 		verbose("\t\tLoading $file");
-		_load($table, qr/^$file\./);
+		_load($table, $file);
 	}
 	
 	push(@RECORDS, $table);
@@ -117,7 +123,7 @@ sub _parse_options {
 		exit(0);
 	}
 	_confirm_options($opts);
-	return $opts;
+	return %{$opts};
 }
 
 sub _confirm_options {
@@ -168,13 +174,14 @@ sub _squirt_sql {
 	}
 	
 	my @args = (
+		($OPTIONS{host}) ? '--host='.$OPTIONS{host} : q{},
+		($OPTIONS{port}) ? '--port='.$OPTIONS{port} : q{},
+		($OPTIONS{user}) ? '--user='.$OPTIONS{user} : q{},
+		($OPTIONS{password}) ? '--password='.$OPTIONS{password} : q{},
 		$OPTIONS{database},
-		($OPTIONS{port}) ? '--port '.$OPTIONS{port} : q{},
-		($OPTIONS{user}) ? '--user '.$OPTIONS{port} : q{},
-		($OPTIONS{password}) ? '--password '.$OPTIONS{password} : q{},
 		$sql
 	);
-	my $cmd = sprintf('mysql --host %s %s %s %s < %s', @args);
+	my $cmd = sprintf('mysql %s %s %s %s %s < %s', @args);
 	verbose("\tRunning command '${cmd}'");
 	system($cmd);
 	my $exit_value  = $? >> 8;
@@ -207,7 +214,7 @@ sub _tables {
 }
 
 sub _find_in_dir {
-	my ($self, $file_regex) = @_;
+	my ($file_regex) = @_;
 	my @files;
 	find(sub {
 		my $file_name = $_;
