@@ -13,19 +13,21 @@ use Getopt::Long;
 use Pod::Usage;
 use Tie::File;
 
-my $OPTIONS = _parse_options();
+my $LOG_FILENAME = 'LOADER-LOG.txt';
 
-my $DB  = $OPTIONS->{database};
-my $LTB = $OPTIONS->{'lines-terminated-by'};
-my $FTB = $OPTIONS->{'fields-terminated-by'};
-my $FEB = $OPTIONS->{'fields-optionally-enclosed-by'};
-my $VERBOSE = $OPTIONS->{verbose};
+my %OPTIONS = _parse_options();
+
+my $DB  = $OPTIONS{database};
+my $LTB = $OPTIONS{'lines-terminated-by'};
+my $FTB = $OPTIONS{'fields-terminated-by'};
+my $FEB = $OPTIONS{'fields-optionally-enclosed-by'};
+my $VERBOSE = $OPTIONS{verbose};
 
 my $DBH = _open_dbh();
 my %DB_TABLES = _db_tables();
 my %TABLES;
 
-my ($_record_file) = _find_in_dir(qr/^\.loader\.log$/xms);
+my ($_record_file) = _find_in_dir(qr/^\${LOG_FILENAME}$/xms);
 tie my @RECORDS, 'Tie::File', $_record_file or confess("Cannot open file $_record_file : $!");
 my %PROCESSED_RECORDS = _process_records();
 
@@ -64,8 +66,8 @@ sub verbose {
 sub _process_table {
 	my ($table) = @_;
 	
-	if($PROCESSED_RECORDS->{$table}) {
-		verbose("\tNot processing $table as it is already in .loader.log. If this is not wrong then remove & rerun");
+	if($PROCESSED_RECORDS{$table}) {
+		verbose("\tNot processing $table as it is already in ${LOG_FILENAME}. If this is not wrong then remove & rerun");
 		return;
 	}
 	
@@ -91,9 +93,11 @@ sub _parse_options {
 		fields-optionally-enclosed-by=s 
 		fields-terminated-by=s 
 		host=s
+		ignore
 		lines-terminated-by=s 
 		password=s
 		port=i
+		replace
 		skip-lines=i
 		tables=s
 		user=s
@@ -120,7 +124,7 @@ sub _confirm_options {
 	my ($opts) = @_;
 	
 	if(!$opts->{database}) {
-		print STDERR "Need a schema to dump\n";
+		print STDERR "Need a schema to load\n";
 		pod2usage(1);
 	}
 	
@@ -145,10 +149,10 @@ sub _optional_set {
 
 sub _open_dbh {
 	my ($hostname, $port, $user, $password) = (
-		($OPTIONS->{host})     ? ";host=$OPTIONS->{host}" : '',
-		($OPTIONS->{port})     ? ";port=$OPTIONS->{port}" : '',
-		($OPTIONS->{user})     ? $OPTIONS->{user} : undef,
-		($OPTIONS->{password}) ? $OPTIONS->{password} : undef
+		($OPTIONS{host})     ? ";host=$OPTIONS{host}" : '',
+		($OPTIONS{port})     ? ";port=$OPTIONS{port}" : '',
+		($OPTIONS{user})     ? $OPTIONS{user} : undef,
+		($OPTIONS{password}) ? $OPTIONS{password} : undef
 	);
 	my $dsn = "DBI:mysql:database=${DB}${hostname}${port}";
 	my $dbh = DBI->connect($dsn, $user, $password, {RaiseError => 1});
@@ -164,13 +168,14 @@ sub _squirt_sql {
 	}
 	
 	my @args = (
-		$OPTIONS->{database},
-		($OPTIONS->{port}) ? '--port '.$OPTIONS->{port} : q{},
-		($OPTIONS->{user}) ? '--user '.$OPTIONS->{port} : q{},
-		($OPTIONS->{password}) ? '--password '.$OPTIONS->{password} : q{},
+		$OPTIONS{database},
+		($OPTIONS{port}) ? '--port '.$OPTIONS{port} : q{},
+		($OPTIONS{user}) ? '--user '.$OPTIONS{port} : q{},
+		($OPTIONS{password}) ? '--password '.$OPTIONS{password} : q{},
 		$sql
 	);
 	my $cmd = sprintf('mysql --host %s %s %s %s < %s', @args);
+	verbose("\tRunning command '${cmd}'");
 	system($cmd);
 	my $exit_value  = $? >> 8;
 	if($exit_value != 0) {
@@ -181,9 +186,9 @@ sub _squirt_sql {
 
 sub _db_tables {
 	my %tables;
-	my $sth = $DBH->table_info(undef, $OPTIONS->{database}, '%');
+	my $sth = $DBH->table_info(undef, $OPTIONS{database}, '%');
 	while(my $row = $sth->fetchrow_arrayref()) {
-		$tables->{$row->[2]} = 1;	
+		$tables{$row->[2]} = 1;	
 	}
 	$sth->finish();
 	return %tables;
@@ -192,8 +197,8 @@ sub _db_tables {
 #Load only the specified tables or all of them in the DB
 sub _tables {
 	my %tables;
-	if($OPTIONS->{tables}) {
-		%tables = map {$_ => 1} split(/,/, $OPTIONS->{tables});
+	if($OPTIONS{tables}) {
+		%tables = map {$_ => 1} split(/,/, $OPTIONS{tables});
 	}
 	else {
 		%tables = _db_tables();	
@@ -206,8 +211,11 @@ sub _find_in_dir {
 	my @files;
 	find(sub {
 		my $file_name = $_;
-		push(@files, $File::Find::name);
-	}, $OPTIONS->{directory});
+		if($file_name =~ $file_regex) {
+			push(@files, $File::Find::name);
+		}
+		return;
+	}, $OPTIONS{directory});
 	return @files;
 }
 
@@ -220,24 +228,29 @@ sub _load {
 		if($FTB) {
 			$field_opts .= q{terminated by '}.$FTB.q{' };
 		}
-		if($FEB}) {
+		if($FEB) {
 			$field_opts .= q{optionally enclosed by '}.$FTB.q{' };
 		}
 	}
 	
 	my @args = (
 		$file,
-		($OPTIONS->{replace}) ? 'REPLACE' ? ($OPTIONS->{ignore}) 'IGNORE' : q{},
+		($OPTIONS{replace}) ? 'REPLACE' : ($OPTIONS{ignore}) ? 'IGNORE' : q{},
 		$table,
 		$field_opts,
 		qq{lines terminated by '${LTB}'},
-		($OPTIONS->{'skip_lines'}) ? 'ignore '.$OPTIONS->{'skip_lines'}.' lines' : q{},
+		($OPTIONS{'skip_lines'}) ? 'ignore '.$OPTIONS{'skip_lines'}.' lines' : q{},
 	);
 	
 	_toggle_indexes(0);
 	
 	my $ddl = sprintf(q{LOAD DATA LOCAL INFILE '%s' %s INTO TABLE %s %s %s %s}, @args);
-	$DBH->do($ddl);
+	verbose("\t\tAbout to run $ddl");
+	eval {$DBH->do($ddl);};
+	if($@) {
+		warn("Problem found when processing ${table} : $@");
+		exit 2;
+	}
 	
 	_toggle_indexes(1);
 	
@@ -246,7 +259,7 @@ sub _load {
 
 sub _toggle_indexes {
 	my ($table, $on) = @_;
-	if($OPTIONS->{'turn-off-indexes'}) {
+	if($OPTIONS{'turn-off-indexes'}) {
 		my $cmd = ($on) ? 'ENABLE' : 'DISABLE';
 		verbose("\t\tToggling indexes to '$cmd'");
 		my $ddl = qq{ALTER TABLE $table $cmd KEYS};
@@ -292,8 +305,18 @@ e.g. table tmp would be used to find files called tmp.txt tmp.001.txt but not
 tmp_table.txt
 
 The script also records what it has done to aid re-runs when connections fail
-under stressful loads. This is called .loader.log which should be edited 
-accordingly when you need to run a new file. 
+under stressful loads. This is called LOADER-LOG.txt which should be edited 
+accordingly when you need to run a new file.
+
+The program also uses local file loads via the Perl DBI driver. Sometimes this
+will not work because the option has not been turned on in your 
+MySQL configuration. You can attempt to locally turn it on by putting
+the following into ~/my.cnf	
+
+	[client]
+	loose-local-infile=1
+
+If that does not work then consult your DBA for other possible reasons
 
 =head1 OPTIONS
 
