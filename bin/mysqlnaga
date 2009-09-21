@@ -120,7 +120,7 @@ sub _open_dbh {
 	my ($hostname, $port, $user, $password) = (
 		($OPTIONS->{host})            ? ";host=$OPTIONS->{host}" : '',
 		($OPTIONS->{port})            ? ";port=$OPTIONS->{port}" : '',
-		($OPTIONS->{blocking_select}) ? ";mysql_use_result=1",
+		($OPTIONS->{blocking_select}) ? ";mysql_use_result=1" : '',
 		($OPTIONS->{user})            ? $OPTIONS->{user} : undef,
 		($OPTIONS->{password})        ? $OPTIONS->{password} : undef
 	);
