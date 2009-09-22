@@ -71,7 +71,7 @@ sub _parse_options {
 		lines-terminated-by=s 
 		password=s
 		port=i
-		tables=s
+		tables=s@
 		user=s
 		verbose 
 		version 
@@ -117,14 +117,14 @@ sub _optional_set {
 }
 
 sub _open_dbh {
-	my ($hostname, $port, $user, $password) = (
+	my ($hostname, $blocking_select, $port, $user, $password) = (
 		($OPTIONS->{host})            ? ";host=$OPTIONS->{host}" : '',
 		($OPTIONS->{port})            ? ";port=$OPTIONS->{port}" : '',
 		($OPTIONS->{blocking_select}) ? ";mysql_use_result=1" : '',
 		($OPTIONS->{user})            ? $OPTIONS->{user} : undef,
 		($OPTIONS->{password})        ? $OPTIONS->{password} : undef
 	);
-	my $dsn = "DBI:mysql:database=${DB}${hostname}${port}";
+	my $dsn = "DBI:mysql:database=${DB}${hostname}${port}${blocking_select}";
 	my $dbh = DBI->connect($dsn, $user, $password, {RaiseError => 1});
 	return $dbh;
 }
@@ -132,7 +132,7 @@ sub _open_dbh {
 sub _tables {
 	my @tables;
 	if($OPTIONS->{tables}) {
-		@tables = split(/,/, $OPTIONS->{tables});
+		@tables = split(/,/, join(',', @{$OPTIONS->{tables}}));
 	}
 	else {
 		my $sth = $DBH->table_info(undef, $OPTIONS->{database}, '%');
