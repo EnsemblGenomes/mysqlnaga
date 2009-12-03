@@ -12,6 +12,20 @@ use File::Spec;
 use Getopt::Long;
 use Pod::Usage;
 use Tie::File;
+use Memoize;
+
+memoize('_columns');
+
+my %BINARY_COLUMNS = (
+  TINYBLOB => 1,
+  BLOB => 1,
+  MEDIUMBLOB => 1,
+  LONGBLOB => 1,
+  BINARY => 1,
+  BIT => 1,
+  BINARY => 1
+);
+
 
 my $LOG_FILENAME = 'LOADER-LOG.txt';
 
@@ -106,6 +120,7 @@ sub _parse_options {
 		replace
 		skip-lines=i
 		tables=s
+		turn-off-indexes
 		user=s
 		verbose 
 		version 
@@ -160,7 +175,7 @@ sub _open_dbh {
 		($OPTIONS{user})     ? $OPTIONS{user} : undef,
 		($OPTIONS{password}) ? $OPTIONS{password} : undef
 	);
-	my $dsn = "DBI:mysql:database=${DB}${hostname}${port}";
+	my $dsn = "DBI:mysql:database=${DB}${hostname}${port};mysql_local_infile=1";
 	my $dbh = DBI->connect($dsn, $user, $password, {RaiseError => 1});
 	return $dbh;
 }
@@ -213,6 +228,17 @@ sub _tables {
 	return %tables;
 }
 
+sub _columns {
+  my ($table) = @_;
+  my @columns;
+  my $sth = $DBH->column_info( undef, undef, $table, '%' );
+  while ( my $row = $sth->fetchrow_arrayref() ) {
+    push( @columns, {name => $row->[3], type => $row->[5], position => $row->[16]} );
+  }
+  $sth->finish();
+  return [sort {$a->{position} <=> $b->{position}} @columns];
+}
+
 sub _find_in_dir {
 	my ($file_regex) = @_;
 	my @files;
@@ -236,7 +262,7 @@ sub _load {
 			$field_opts .= q{terminated by '}.$FTB.q{' };
 		}
 		if($FEB) {
-			$field_opts .= q{optionally enclosed by '}.$FTB.q{' };
+			$field_opts .= q{optionally enclosed by '}.$FEB.q{' };
 		}
 	}
 	
@@ -247,11 +273,12 @@ sub _load {
 		$field_opts,
 		qq{lines terminated by '${LTB}'},
 		($OPTIONS{'skip_lines'}) ? 'ignore '.$OPTIONS{'skip_lines'}.' lines' : q{},
+		_generate_column_string($table)
 	);
 	
-	_toggle_indexes(0);
+	_toggle_indexes($table, 0);
 	
-	my $ddl = sprintf(q{LOAD DATA LOCAL INFILE '%s' %s INTO TABLE %s %s %s %s}, @args);
+	my $ddl = sprintf(q{LOAD DATA LOCAL INFILE '%s' %s INTO TABLE %s %s %s %s %s}, @args);
 	verbose("\t\tAbout to run $ddl");
 	eval {$DBH->do($ddl);};
 	if($@) {
@@ -259,7 +286,7 @@ sub _load {
 		exit 2;
 	}
 	
-	_toggle_indexes(1);
+	_toggle_indexes($table, 1);
 	
 	return;
 }
@@ -285,6 +312,32 @@ sub _process_records {
 		$records{$line} = 1;
 	}
 	return %records;
+}
+
+sub _is_column_binary {
+  my ($column_hash) = @_;
+  return ($BINARY_COLUMNS{uc($column_hash->{type})}) ? 1 : 0;
+}
+
+sub _generate_column_string {
+  my ($table) = @_;
+  my @columns = @{_columns($table)};
+  my @column_names;
+  my @sets;
+  foreach my $col (@columns) {
+    if(_is_column_binary($col)) {
+      my $var_name = '@'.$col->{name};
+      push(@sets, sprintf('%s = unhex(%s)', $col->{name}, $var_name));
+      push(@column_names, $var_name);
+    }
+    else {
+      push(@column_names, $col->{name});
+    }
+  }
+  
+  my $sets_string = (@sets) ? 'SET '.join(',',@sets) : q{};
+  
+  return sprintf('(%s) %s', join(',', @column_names), $sets_string);  
 }
 
 __END__

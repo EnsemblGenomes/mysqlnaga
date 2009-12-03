@@ -11,210 +11,278 @@ use Carp;
 use DBI;
 use Pod::Usage;
 
+use Memoize;
+memoize('_columns');
+
 my $OPTIONS = _parse_options();
 
-my $DB  = $OPTIONS->{database};
-my $LTB = $OPTIONS->{'lines-terminated-by'};
-my $FTB = $OPTIONS->{'fields-terminated-by'};
-my $FEB = $OPTIONS->{'fields-optionally-enclosed-by'};
+my $DB      = $OPTIONS->{database};
+my $LTB     = $OPTIONS->{'lines-terminated-by'};
+my $FTB     = $OPTIONS->{'fields-terminated-by'};
+my $FEB     = $OPTIONS->{'fields-optionally-enclosed-by'};
 my $VERBOSE = $OPTIONS->{verbose};
 
-my $DBH = _open_dbh();
+my $DBH    = _open_dbh();
 my @TABLES = _tables();
+
+my %BINARY_COLUMNS = (
+  TINYBLOB => 1,
+  BLOB => 1,
+  MEDIUMBLOB => 1,
+  LONGBLOB => 1,
+  BINARY => 1,
+  BIT => 1,
+  BINARY => 1
+);
 
 process_db();
 exit 0;
 
 sub process_db {
-	verbose("Working on database '${DB}'");
-	foreach my $table (_tables()) {
-		_process_table($table);	
-	}
-	_dump_sql();
-	verbose("Finished with database '${DB}'");
-	return;
+  verbose("Working on database '${DB}'");
+  foreach my $table ( _tables() ) {
+    _process_table($table);
+  }
+  _dump_sql();
+  verbose("Finished with database '${DB}'");
+  return;
 }
 
 sub verbose {
-	if($VERBOSE) {
-		print STDERR @_, "\n";	
-	}
-	return;
+  if ($VERBOSE) {
+    print STDERR @_, "\n";
+  }
+  return;
 }
 
 sub _process_table {
-	my ($table) = @_;
-	
-	verbose("\tWorking on table '${table}'");
-	
-	my $sth = _open_sth($table);
-	verbose("\tSelecting rows");
-	$sth->execute();
-	verbose("\tWriting to file");
-	_write_to_file($sth, $table);
-	
-	$sth->finish();
-	
-	verbose("\tFinished table");
-	return;
+  my ($table) = @_;
+
+  verbose("\tWorking on table '${table}'");
+
+  my $sth = _open_sth($table);
+  verbose("\tSelecting rows");
+  $sth->execute();
+  verbose("\tWriting to file");
+  _write_to_file( $sth, $table );
+
+  $sth->finish();
+
+  verbose("\tFinished table");
+  return;
 }
 
 sub _parse_options {
-	my @options = qw(
-		blocking_select
-		directory=s
-		database=s 
-		fields-escaped-by=s 
-		fields-optionally-enclosed-by=s 
-		fields-terminated-by=s 
-		host=s
-		lines-terminated-by=s 
-		password=s
-		port=i
-		tables=s@
-		user=s
-		verbose 
-		version 
-		write_header
-		help|? 
-		man
-	);
-	
-	my $opts = {};
-	
-	GetOptions($opts, @options) or pod2usage(2);
-	pod2usage(1) if $opts->{help};
-	pod2usage(-exitstatus => 0, -verbose => 2) if $opts->{man};
-	if($opts->{version}) {
-		print "mysqlnaga version $VERSION\n";
-		exit(0);
-	}
-	_confirm_options($opts);
-	return $opts;
+  my @options = qw(
+    blocking-select
+    directory=s
+    database=s
+    fields-escaped-by=s
+    fields-optionally-enclosed-by=s
+    fields-terminated-by=s
+    host=s
+    lines-terminated-by=s
+    password=s
+    port=i
+    tables=s@
+    user=s
+    verbose
+    version
+    write-header
+    help|?
+    man
+  );
+
+  my $opts = {};
+
+  GetOptions( $opts, @options ) or pod2usage(2);
+  pod2usage(1) if $opts->{help};
+  pod2usage( -exitstatus => 0, -verbose => 2 ) if $opts->{man};
+  if ( $opts->{version} ) {
+    print "mysqlnaga version $VERSION\n";
+    exit(0);
+  }
+  _confirm_options($opts);
+  return $opts;
 }
 
 sub _confirm_options {
-	my ($opts) = @_;
-	#TODO Need to add more options here to ensure it works properly ...  think it does
-	
-	if(!$opts->{database}) {
-		print STDERR "Need a schema to dump\n";
-		pod2usage(1);
-	}
-	
-	_optional_set($opts, 'fields-terminated-by',"\t");
-	_optional_set($opts, 'fields-optionally-enclosed-by','');
-	_optional_set($opts, 'lines-terminated-by',"\n");
-	_optional_set($opts, 'directory','.');
-	
-	return;	
+  my ($opts) = @_;
+
+#TODO Need to add more options here to ensure it works properly ...  think it does
+
+  if ( !$opts->{database} ) {
+    print STDERR "Need a schema to dump\n";
+    pod2usage(1);
+  }
+
+  _optional_set( $opts, 'fields-terminated-by',          "\t" );
+  _optional_set( $opts, 'fields-optionally-enclosed-by', '' );
+  _optional_set( $opts, 'lines-terminated-by',           "\n" );
+  _optional_set( $opts, 'directory',                     '.' );
+
+  return;
 }
 
 sub _optional_set {
-	my ($opts, $key, $default) = @_;	
-	$opts->{$key} = $default unless $opts->{$key};
-	return;
+  my ( $opts, $key, $default ) = @_;
+  $opts->{$key} = $default unless $opts->{$key};
+  return;
 }
 
 sub _open_dbh {
-	my ($hostname, $blocking_select, $port, $user, $password) = (
-		($OPTIONS->{host})            ? ";host=$OPTIONS->{host}" : '',
-		($OPTIONS->{port})            ? ";port=$OPTIONS->{port}" : '',
-		($OPTIONS->{blocking_select}) ? ";mysql_use_result=1" : '',
-		($OPTIONS->{user})            ? $OPTIONS->{user} : undef,
-		($OPTIONS->{password})        ? $OPTIONS->{password} : undef
-	);
-	my $dsn = "DBI:mysql:database=${DB}${hostname}${port}${blocking_select}";
-	my $dbh = DBI->connect($dsn, $user, $password, {RaiseError => 1});
-	return $dbh;
+  my ( $hostname, $blocking_select, $port, $user, $password ) = (
+    ( $OPTIONS->{host} )            ? ";host=$OPTIONS->{host}" : '',
+    ( $OPTIONS->{port} )            ? ";port=$OPTIONS->{port}" : '',
+    ( $OPTIONS->{blocking_select} ) ? ";mysql_use_result=1"    : '',
+    ( $OPTIONS->{user} )            ? $OPTIONS->{user}         : undef,
+    ( $OPTIONS->{password} )        ? $OPTIONS->{password}     : undef
+  );
+  my $dsn = "DBI:mysql:database=${DB}${hostname}${port}${blocking_select}";
+  my $dbh = DBI->connect( $dsn, $user, $password, { RaiseError => 1 } );
+  return $dbh;
 }
 
 sub _tables {
-	my @tables;
-	if($OPTIONS->{tables}) {
-		@tables = split(/,/, join(',', @{$OPTIONS->{tables}}));
-	}
-	else {
-		my $sth = $DBH->table_info(undef, $OPTIONS->{database}, '%');
-		while(my $row = $sth->fetchrow_arrayref()) {
-			push(@tables, $row->[2]);	
-		}
-		$sth->finish();
-	}
-	return @tables;
+  my @tables;
+  if ( $OPTIONS->{tables} ) {
+    @tables = split( /,/, join( ',', @{ $OPTIONS->{tables} } ) );
+  }
+  else {
+    my $sth = $DBH->table_info( undef, $OPTIONS->{database}, '%' );
+    while ( my $row = $sth->fetchrow_arrayref() ) {
+      push( @tables, $row->[2] );
+    }
+    $sth->finish();
+  }
+  return @tables;
 }
 
 sub _open_file {
-	my ($filename) = @_;
-	my $file = File::Spec->catfile($OPTIONS->{directory}, $filename);
-	
-	verbose("\tThe file at location '${file}' will be overwritten") if -f $file;
-	
-	open my $fh, '>', $file or confess("Cannot open '${file}' for writing: $!");
-	return $fh;
+  my ($filename) = @_;
+  my $file = File::Spec->catfile( $OPTIONS->{directory}, $filename );
+
+  verbose("\tThe file at location '${file}' will be overwritten") if -f $file;
+
+  open my $fh, '>', $file or confess("Cannot open '${file}' for writing: $!");
+  return $fh;
 }
 
 sub _columns {
-	my ($sth) = @_;
-	my @columns;
-	for (my $i =0; $i < $sth->{NUM_OF_FIELDS}; $i++) {
-		push(@columns, {name => $sth->{NAME}->[$i], type => $sth->{TYPE}->[$i] });
-	}
-	return @columns;
+  my ($table) = @_;
+  my @columns;
+  my $sth = $DBH->column_info( undef, undef, $table, '%' );
+  while ( my $row = $sth->fetchrow_arrayref() ) {
+    push( @columns, {name => $row->[3], type => $row->[5], position => $row->[16]});
+  }
+  $sth->finish();
+  return [sort {$a->{position} <=> $b->{position}} @columns];
 }
 
 sub _open_sth {
-	my ($table) = @_;
-	my $sth = $DBH->prepare("select * from ${table}");
-	return $sth;
+  my ($table) = @_;
+  _set_max_long_read_length($table);
+  return $DBH->prepare(_generate_select($table));
+}
+
+sub _generate_select {
+  my ($table) = @_;
+  my @columns = @{_columns($table)};
+  
+  my $column_names = join(',', map {
+    my $val; 
+    if(_is_column_binary($_)) {
+      $val = sprintf('HEX(%s)', $_->{name});
+    }
+    else {
+     $val = $_->{name}; 
+    } 
+    $val
+  } @columns);
+  
+  my $quoted_table = $DBH->quote_identifier($table);
+  return sprintf('select %s from %s', $column_names, $quoted_table);
 }
 
 sub _write_to_file {
-	my ($sth, $table) = @_;
-	
-	my $fh  = _open_file("${table}.txt");
-	
-	my @columns = _columns($sth);
-	my $count = scalar(@columns);
-	my $max_index = $count - 1;
-	
-	my $writer = sub {
-		for (my $i =0; $i < $count; $i++) {
-			my $record = ($_[$i]) ? $_[$i] : '\N';
-			print $fh "${FEB}${record}${FEB}";
-			print $fh $FTB if($i != $max_index);
-		}
-		print $fh $LTB;
-	};
-	
-	if($OPTIONS->{write_header}) {
-		$writer->(map { $_->{name} } @columns);
-	}
-	
-	while (my $row = $sth->fetchrow_arrayref()) {
-		$writer->(@{$row});
-	}
-	
-	close($fh);
-	
-	return;
+  my ( $sth, $table ) = @_;
+
+  my $fh = _open_file("${table}.txt");
+
+  my $columns   = _columns($table);
+  my $count     = scalar(@{$columns});
+  my $max_index = $count - 1;
+
+  my $writer = sub {
+    for ( my $i = 0 ; $i < $count ; $i++ ) {
+      my $record = ($_[$i]) ? $_[$i] : '\N';
+      print $fh "${FEB}${record}${FEB}";
+      print $fh $FTB if ( $i != $max_index );
+    }
+    print $fh $LTB;
+  };
+
+  if ( $OPTIONS->{write_header} ) {
+    $writer->( map { $_->{name} } @{$columns} );
+  }
+
+  while ( my $row = $sth->fetchrow_arrayref() ) {
+    $writer->( @{$row} );
+  }
+
+  close($fh);
+
+  return;
 }
 
 sub _dump_sql {
-	verbose("\tDumping SQL for schema");
-	
-	my $fh = _open_file("${DB}.sql");
-	
-	foreach my $table (@TABLES) {
-		my $sth = $DBH->prepare("show create table ${table}");
-		$sth->execute();
-		while (my $row = $sth->fetchrow_arrayref()) {
-			print $fh $row->[1], ';', "\n"x2;
-		}
-		$sth->finish();
-	}
-	
-	close $fh;
+  verbose("\tDumping SQL for schema");
+
+  my $fh = _open_file("${DB}.sql");
+
+  foreach my $table (@TABLES) {
+    my $sth = $DBH->prepare("show create table ${table}");
+    $sth->execute();
+    while ( my $row = $sth->fetchrow_arrayref() ) {
+      print $fh $row->[1], ';', "\n" x 2;
+    }
+    $sth->finish();
+  }
+
+  close $fh;
+}
+
+sub _is_column_binary {
+  my ($column_hash) = @_;
+  return ($BINARY_COLUMNS{uc($column_hash->{type})}) ? 1 : 0;
+}
+
+sub _set_max_long_read_length {
+  my ($table) = @_;
+  my @columns = @{_columns($table)};
+  my @binary_columns = grep { _is_column_binary($_) } @columns;
+  
+  return if scalar(@binary_columns) == 0;
+  
+  my $select_columns =
+    join(',', 
+    map { sprintf('ifnull(max(length(%s)), 0)', $_) } 
+    map { $_->{name} } 
+    @binary_columns);
+  
+  my $read_length = $DBH->{LongReadLen};
+  my $sql = "select ${select_columns} from ${table}";
+  my $sth = $DBH->prepare($sql);
+  $sth->execute();
+  while ( my $row = $sth->fetchrow_arrayref() ) {
+    foreach my $max (@{$row}) {
+      $read_length = $max*2 if $max > $read_length;
+    }
+  }
+  $sth->finish();
+  
+  $DBH->{LongReadLen} = $read_length;
+  return;
 }
 
 __END__
@@ -247,7 +315,7 @@ format.
 
 =over 8
 
-=item B<--blocking_select>
+=item B<--blocking-select>
 
 If turned on will force the usage of mysql_use_result which uses less
 memory & is faster but tends to block other processes. If you want the fastest
@@ -308,7 +376,7 @@ Print verbose logging messages along with the dump. These go to STDERR
 
 Print vesion and exit
 
-=item B<--write_header>
+=item B<--write-header>
 
 Writes a header line to the file which are the column names.
 
