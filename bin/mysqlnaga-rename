@@ -122,24 +122,26 @@ sub _assert_target {
   }
   
   my $table_count = _count_tables($TARGET);
-  croak("Cannot continue. Target schema '${TARGET}' is not empty") if $table_count > 0 ;
+  croak("Cannot continue. Target schema '${TARGET}' is not empty. Found $table_count table(s)") if $table_count > 0 ;
   return;
 }
 
 sub _db_tables {
   my ($db) = @_;
+  $DBH->do('use '.$db);
 	my %tables;
 	my $sth = $DBH->table_info(undef, $db, '%');
 	while(my $row = $sth->fetchrow_arrayref()) {
 		$tables{$row->[2]} = 1;	
 	}
 	$sth->finish();
+	$DBH->do('use '.$DB);
 	return %tables;
 }
 
 sub _count_tables {
   my ($db) = @_;
-  my %tables = _db_tables($TARGET);
+  my %tables = _db_tables($db);
   my $table_count = scalar(keys(%tables));
   return $table_count;
 }
