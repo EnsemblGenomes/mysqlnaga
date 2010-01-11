@@ -110,9 +110,9 @@ sub _open_dbh {
 sub _assert_target {
   my $search_sql = "show databases like ?";
   my $ref = $DBH->selectall_arrayref($search_sql, {}, $TARGET);
-  my $count = scalar(@{$ref});
+  my $db_count = scalar(@{$ref});
   
-  if($count < 1) {
+  if($db_count < 1) {
     if($CREATE) {
       _create_target();
     }
@@ -122,7 +122,7 @@ sub _assert_target {
   }
   
   my $table_count = _count_tables($TARGET);
-  croak("Cannot continue. Target schema '${TARGET}' is not empty") if $count > 0 ;
+  croak("Cannot continue. Target schema '${TARGET}' is not empty") if $table_count > 0 ;
   return;
 }
 
