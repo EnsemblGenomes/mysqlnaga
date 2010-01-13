@@ -1,0 +1,313 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+our $VERSION = '1.0';
+
+use Carp;
+use DBI;
+use Getopt::Long;
+use Pod::Usage;
+
+my %OPTIONS = _parse_options();
+
+my $DB      = $OPTIONS{database};
+my $TARGET  = $OPTIONS{target};
+my $VERBOSE = $OPTIONS{verbose};
+
+my $DBH       = _open_dbh('source');
+my $TARGETDBH = _open_dbh('target');
+
+process_db();
+
+sub process_db {
+	verbose("Checksumming database '${DB}' against '${TARGET}'");
+	compare_schemas();
+	return;
+}
+
+sub compare_schemas {
+  my %source_tables = _process_schema($DBH);
+  my %target_tables = _process_schema($TARGETDBH);
+  
+  my @source_to_target_disjunction = _disjunction(\%source_tables, \%target_tables);
+  my @target_to_source_disjunction = _disjunction(\%target_tables, \%source_tables);
+  
+  if(scalar(@source_to_target_disjunction) == 0 && scalar(@target_to_source_disjunction) == 0) {
+    verbose('Checksums are okay; schemas are the same');
+    exit 0;
+  }
+  else {
+    my $report = sub {
+      my ($type, $disjunction, $checksums) = @_;
+      my $msg = $type.' schema problems:';
+      print STDERR $msg, "\n", ('-' x length($msg)), "\n";
+      print STDERR join("\n", map {$_."\t".$checksums->{$_}} @{$disjunction}), "\n"x2;
+      return;
+    };
+    
+    $report->('Source', \@source_to_target_disjunction, \%source_tables);
+    $report->('Target', \@target_to_source_disjunction, \%target_tables);
+        
+    exit 1;
+  }
+}
+
+sub verbose {
+	if($VERBOSE) {
+		print STDERR @_, "\n";	
+	}
+	return;
+}
+
+sub _parse_options {
+	my @options = qw(
+	  create
+		database=s
+		drop 
+		host=s
+		password=s
+		port=i
+		target=s
+		targethost=s
+		targetpassword=s
+		targetport=i
+		targetuser=s
+		user=s
+		verbose 
+		version 
+		help|? 
+		man
+	);
+	
+	my $opts = {};
+	
+	GetOptions($opts, @options) or pod2usage(2);
+	pod2usage(1) if $opts->{help};
+	pod2usage(-exitstatus => 0, -verbose => 2) if $opts->{man};
+	if($opts->{version}) {
+		print "mysqlnaga-rename version $VERSION\n";
+		exit(0);
+	}
+	_confirm_options($opts);
+	return %{$opts};
+}
+
+sub _confirm_options {
+	my ($opts) = @_;
+	
+	if(!$opts->{database}) {
+		print STDERR "Need a schema to rename from. Specify using -database\n";
+		pod2usage(1);
+	}
+	
+	if(!$opts->{target}) {
+		print STDERR "Need a schema to rename to. Specify using -target\n";
+		pod2usage(1);
+	}
+	
+	return;	
+}
+
+sub _open_dbh {
+	my ($type) = @_;
+
+	my $details = {
+		source => [
+			$OPTIONS{host}, 
+			$OPTIONS{port}, 
+			$OPTIONS{user}, 
+			$OPTIONS{password}
+		],
+		target => [
+			$OPTIONS{targethost} || $OPTIONS{host}, 
+			$OPTIONS{targetport} || $OPTIONS{port}, 
+			$OPTIONS{targetuser} || $OPTIONS{user}, 
+			$OPTIONS{targetpassword} || $OPTIONS{password}
+		]
+	}->{$type};
+		
+	my $db = { source => $OPTIONS{database}, target => $OPTIONS{target} }->{$type};
+	
+	my ($hostname, $port, $user, $password) = (
+		($details->[0])     ? ";host=$details->[0]" : '',
+		($details->[1])     ? ";port=$details->[1]" : '',
+		($details->[2])     ? $details->[2]         : undef,
+		($details->[3])     ? $details->[3]         : undef
+	);
+	my $dsn = "DBI:mysql:database=${DB}${hostname}${port}";
+	my $dbh = DBI->connect($dsn, $user, $password, {RaiseError => 1});
+	$dbh->do('use '.$db);
+	return $dbh;
+}
+
+sub _db_tables {
+  my ($dbh) = @_;
+	my @tables;
+	my $sth = $dbh->table_info(undef, undef, '%');
+	while(my $row = $sth->fetchrow_arrayref()) {
+		push(@tables, $row->[2]);	
+	}
+	$sth->finish();
+	return sort @tables;
+}
+
+sub _process_schema {
+	my ($dbh) = @_;
+	my %checksums;
+	for my $table (_db_tables($dbh)) {
+		$checksums{$table} = _checksum_table($dbh, $table);
+	}
+	return %checksums;
+}
+
+sub _checksum_table {
+  my ($dbh, $table) = @_;
+  my $checksum;
+  my $sql = "CHECKSUM TABLE $table extended";
+  my $sth = $dbh->prepare($sql);
+  $sth->execute();
+  if(my $row = $sth->fetchrow_arrayref()) {
+  	$checksum =  $row->[1];
+  }
+  $sth->finish();
+  return $checksum;
+}
+
+sub _disjunction {
+  my ($hash_one, $hash_two) = @_;
+  my @disjunction;
+  foreach my $key (keys %{$hash_one}) {
+    my $not_equal;
+    if(exists $hash_two->{$key}) {
+      $not_equal = 1 if $hash_one->{$key} ne $hash_two->{$key};
+    }
+    else {
+      $not_equal = 1;
+    }
+    push(@disjunction, $key) if $not_equal;
+  }
+  return sort @disjunction;
+}
+
+__END__
+
+=pod
+
+=head1 NAME
+
+mysqlnaga-checksum
+
+=head1 SYNOPSIS
+
+	./mysqlnaga-checksum -database DB -target DB [-create -drop] [-host HOST -port PORT -user USER -pass PASS] [-targethost HOST -targetport PORT -targetuser USER -targetpass PASS] [more options in -h]
+
+=head1 DESCRIPTION
+
+Provides the ability to quickly & easily rename a database on a MySQL server. It
+does this by running rename commands on all available tables.
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--create>
+
+If specified will force a creation of the target schema only if it does not
+already exist.
+
+=item B<--drop>
+
+Drops the source schema. Will abort this if the source schema still has tables
+in it.
+
+=item B<--target>
+
+The database to rename to. Must already exist on the server.
+
+=item B<--database>
+
+The database to rename from
+
+=item B<--host>
+
+Host the MySQL server is located on
+
+=item B<--password>
+
+Password for the target server
+
+=item B<--port>
+
+Port for the server
+
+=item B<--user>
+
+User to connect to the DB with
+
+=item B<--targethost>
+
+Host the MySQL server is located on
+
+=item B<--targetpassword>
+
+Password for the target server
+
+=item B<--targetport>
+
+Port for the server
+
+=item B<--targetuser>
+
+User to connect to the DB with
+
+=item B<--verbose>
+
+Print verbose logging messages along with the dump. These go to STDERR
+
+=item B<--version>
+
+Print vesion and exit
+
+=item B<--help | --?>
+
+This message
+
+=item B<--man>
+
+Perldoc with more information than -help alone
+
+=back
+
+=head1 DEPENDENCIES
+
+Only DBD::mysql. All others are core Perl modules.
+
+=head1 WHY NAGA
+
+Because the program attempts to be smoking hot at copying databases. Also
+naga is a lot smaller the jalepeno (and easier to remember).
+
+=head1 AUTHOR
+
+Andrew Yates
+
+=head1 LICENSE
+
+Copyright (c) 2009, ANDREW YATES
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+* Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+* Neither the name of the ANDREW YATES PERSONAL DEVELOPMENT nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+=head1 VERSION
+
+1.0
+
+=cut
