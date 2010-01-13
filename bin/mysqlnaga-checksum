@@ -87,7 +87,7 @@ sub _parse_options {
 	pod2usage(1) if $opts->{help};
 	pod2usage(-exitstatus => 0, -verbose => 2) if $opts->{man};
 	if($opts->{version}) {
-		print "mysqlnaga-rename version $VERSION\n";
+		print "mysqlnaga-checksum version $VERSION\n";
 		exit(0);
 	}
 	_confirm_options($opts);
@@ -205,30 +205,22 @@ mysqlnaga-checksum
 
 =head1 DESCRIPTION
 
-Provides the ability to quickly & easily rename a database on a MySQL server. It
-does this by running rename commands on all available tables.
+Performs a checksum on the source & target tables reporting if 2 schemas
+and their table contents are the same. It does not assert full schema 
+1:1 (storage engines & the alike) but does deal with if the data
+is the same.
 
 =head1 OPTIONS
 
 =over 8
 
-=item B<--create>
-
-If specified will force a creation of the target schema only if it does not
-already exist.
-
-=item B<--drop>
-
-Drops the source schema. Will abort this if the source schema still has tables
-in it.
-
 =item B<--target>
 
-The database to rename to. Must already exist on the server.
+Target database to checksum
 
 =item B<--database>
 
-The database to rename from
+Source database to checksum
 
 =item B<--host>
 
@@ -248,7 +240,7 @@ User to connect to the DB with
 
 =item B<--targethost>
 
-Host the MySQL server is located on
+Host the target MySQL server is located on
 
 =item B<--targetpassword>
 
@@ -256,11 +248,11 @@ Password for the target server
 
 =item B<--targetport>
 
-Port for the server
+Port for the target server
 
 =item B<--targetuser>
 
-User to connect to the DB with
+User to connect to the target DB with
 
 =item B<--verbose>
 
