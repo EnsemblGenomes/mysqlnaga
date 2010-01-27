@@ -1,0 +1,310 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+our $VERSION = '1.0';
+
+use Carp;
+use DBI;
+use Getopt::Long;
+use Pod::Usage;
+
+my %OPTIONS = _parse_options();
+
+my $DB      = $OPTIONS{database};
+my $TARGET  = $OPTIONS{target};
+my $VERBOSE = $OPTIONS{verbose};
+my $TABLE   = $OPTIONS{table};
+my $SIZE    = uc($OPTIONS{size});
+my $SIZE_SUFFIX = _size_suffix();
+
+my $total_assessed_size = 0;
+
+my $DBH     = _open_dbh();
+
+foreach my $db (_databases($DBH)) {
+  _switch_schema($db); 
+  process_db($db);
+}
+
+print "Total assessed size : $total_assessed_size ${SIZE_SUFFIX}\n";
+
+sub process_db {
+  my ($db) = @_;
+	verbose("Running size calculations for '${DB}'");
+	my $size_hash = size();
+	_print_sizes($db, $size_hash);
+	return;
+}
+
+sub verbose {
+	if($VERBOSE) {
+		print STDERR @_, "\n";	
+	}
+	return;
+}
+
+sub size {
+  my $size_hash = {};
+  foreach my $table (_tables()) {
+    my $array_ref = $DBH->selectall_arrayref('show table status like ?', {}, $table);
+    my $size = $array_ref->[0]->[6] + $array_ref->[0]->[8];
+    $size_hash->{$table} = _convert_to_size($size);
+  }
+  return $size_hash;
+}
+
+sub _print_sizes {
+  my ($db, $size_hash) = @_;
+  my $total = 0;
+  
+  for my $table (keys %{$size_hash}) {
+    $total += $size_hash->{$table};
+  }
+  
+  #Nasty nasty nasty line :(
+  $total_assessed_size += $total;
+  
+  print $db, " (${total} ${SIZE_SUFFIX}) ", "\n";
+  if($OPTIONS{print_tables}) {
+    for my $table (keys %{$size_hash}) {
+      print $table, ' = ', $size_hash->{$table}, ' ', $SIZE_SUFFIX, "\n"; 
+    }
+  }
+}
+
+sub _convert_to_size {
+  my ($bytes) = @_;
+  if($SIZE eq 'B') {
+    return $bytes;
+  }
+  elsif($SIZE eq 'K') {
+    return $bytes/1024;
+  }
+  elsif($SIZE eq 'M') {
+    return $bytes/1024/1024;
+  }
+  elsif($SIZE eq 'G') {
+    return $bytes/1024/1024/1024;
+  }
+}
+
+sub _size_suffix {
+  if($SIZE eq 'B') {
+    return 'b';
+  }
+  elsif($SIZE eq 'K') {
+    return 'KB';
+  }
+  elsif($SIZE eq 'M') {
+    return 'MB';
+  }
+  elsif($SIZE eq 'G') {
+    return 'GB';
+  }
+}
+
+sub _parse_options {
+	my @options = qw(
+		database=s
+		host=s
+		password=s
+		port=i
+		print_tables
+		size=s
+		table=s
+		user=s
+		verbose 
+		version 
+		help|? 
+		man
+	);
+	
+	my $opts = {};
+	
+	GetOptions($opts, @options) or pod2usage(2);
+	pod2usage(1) if $opts->{help};
+	pod2usage(-exitstatus => 0, -verbose => 2) if $opts->{man};
+	if($opts->{version}) {
+		print "mysqlnaga-size version $VERSION\n";
+		exit(0);
+	}
+	_confirm_options($opts);
+	return %{$opts};
+}
+
+sub _confirm_options {
+	my ($opts) = @_;
+	
+	if(!$opts->{database}) {
+		print STDERR "Need a schema to rename from. Specify using -database\n";
+		pod2usage(1);
+	}
+	
+	if(!$opts->{table}) {
+	  $opts->{table} = '%';
+	}
+	
+	if(!$opts->{size}) {
+	  $opts->{size} = 'G';
+	}
+	
+	return;	
+}
+
+sub _open_dbh {
+	my $details = [
+		$OPTIONS{host}, 
+		$OPTIONS{port}, 
+		$OPTIONS{user}, 
+		$OPTIONS{password}
+  ];
+		
+	my $db = $OPTIONS{database};
+	
+	my ($hostname, $port, $user, $password) = (
+		($details->[0])     ? ";host=$details->[0]" : '',
+		($details->[1])     ? ";port=$details->[1]" : '',
+		($details->[2])     ? $details->[2]         : undef,
+		($details->[3])     ? $details->[3]         : undef
+	);
+	my $dsn = "DBI:mysql:${hostname}${port}";
+	my $dbh = DBI->connect($dsn, $user, $password, {RaiseError => 1});
+	return $dbh;
+}
+
+sub _switch_schema {
+  my ($db) = @_;
+  $DBH->do('use '.$db);
+}
+
+sub _databases {
+  my $array_ref = $DBH->selectall_arrayref('show databases like ?', {}, $DB);
+  return sort map { $_->[0] } @{$array_ref};
+}
+
+sub _tables {
+	my @tables;
+	my $sth = $DBH->table_info(undef, undef, $TABLE);
+	while(my $row = $sth->fetchrow_arrayref()) {
+		push(@tables, $row->[2]);	
+	}
+	$sth->finish();
+	return sort @tables;
+}
+
+__END__
+
+=pod
+
+=head1 NAME
+
+mysqlnaga-size
+
+=head1 SYNOPSIS
+
+	./mysqlnaga-size -database DB_PATTERN -table TABLE_PATTERN [-size M] [-print_tables] [-host HOST -port PORT -user USER -pass PASS] [more options in -h]
+
+=head1 DESCRIPTION
+
+This script allows a user to get a listing of the sizes of every database they
+specify on the server. You can define the databases to look at using a MySQL
+pattern & also limit the tables by a MySQL pattern. Total assessed sizes
+are also printed to screen. 
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--database>
+
+Source databases to size according to the MySQL pattern. % means assess
+everything on the schema.
+
+=item B<--table>
+
+Can specify a table pattern to pick up on or leave it undefined to force
+the code to default to % (allows you to size a specific table in a schema).
+
+=item B<--size>
+
+Specifies the size you want reported. This can be set to
+
+  B -> bytes
+  K -> kilobtes
+  M -> megabytes
+  G -> gigabytes
+  
+Defaults to G
+  
+=item B<--print_tables>
+
+If specified this will force every table's size to be printed. This is
+off by default.
+
+=item B<--host>
+
+Host the MySQL server is located on
+
+=item B<--password>
+
+Password for the target server
+
+=item B<--port>
+
+Port for the server
+
+=item B<--user>
+
+User to connect to the DB with
+
+=item B<--verbose>
+
+Print verbose logging messages along with the dump. These go to STDERR
+
+=item B<--version>
+
+Print vesion and exit
+
+=item B<--help | --?>
+
+This message
+
+=item B<--man>
+
+Perldoc with more information than -help alone
+
+=back
+
+=head1 DEPENDENCIES
+
+Only DBD::mysql. All others are core Perl modules.
+
+=head1 WHY NAGA
+
+Because the program attempts to be smoking hot at copying databases. Also
+naga is a lot smaller the jalepeno (and easier to remember).
+
+=head1 AUTHOR
+
+Andrew Yates
+
+=head1 LICENSE
+
+Copyright (c) 2009, ANDREW YATES
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+* Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+* Neither the name of the ANDREW YATES PERSONAL DEVELOPMENT nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+=head1 VERSION
+
+1.0
+
+=cut
