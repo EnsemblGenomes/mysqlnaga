@@ -201,7 +201,7 @@ mysqlnaga-checksum
 
 =head1 SYNOPSIS
 
-	./mysqlnaga-checksum -database DB -target DB [-create -drop] [-host HOST -port PORT -user USER -pass PASS] [-targethost HOST -targetport PORT -targetuser USER -targetpass PASS] [more options in -h]
+	./mysqlnaga-checksum -database DB -target DB [-host HOST -port PORT -user USER -pass PASS] [-targethost HOST -targetport PORT -targetuser USER -targetpass PASS] [more options in -h]
 
 =head1 DESCRIPTION
 
