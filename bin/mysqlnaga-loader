@@ -93,6 +93,8 @@ sub _process_table {
 	
 	verbose("\tWorking on table '${table}'");
 	
+	_nuke($table);
+	
 	my @files = _find_in_dir(qr/^$table\./xms);
 	foreach my $file (@files) {
 		verbose("\t\tLoading $file");
@@ -115,6 +117,7 @@ sub _parse_options {
 		host=s
 		ignore
 		lines-terminated-by=s 
+		nuke
 		password=s
 		port=i
 		replace
@@ -250,6 +253,15 @@ sub _find_in_dir {
 		return;
 	}, $OPTIONS{directory});
 	return @files;
+}
+
+sub _nuke {
+  my ($table) = @_;
+  if($OPTIONS{nuke}) {
+    verbose("\tNuking ${table}\n");
+    $DBH->do("truncate table ${table}");
+  }
+  return;
 }
 
 sub _load {
@@ -411,6 +423,11 @@ If specified will force records to be replaced with those from the input file on
 
 If specified will ignore clashes arising from input files
 
+=item B<--nuke>
+
+If specified will cause mysqlnaga-loader to truncate the table which we
+are about to load into. Use with caution.
+
 =item B<--skip-lines>
 
 Will skip the number of given lines per table load
@@ -434,7 +451,7 @@ Port for the server
 
 =item B<--tables>
 
-Tables to dump. If not given then all are assumed
+Tables to load. If not given then all are assumed
 
 =item B<--turn-off-indexes>
 
