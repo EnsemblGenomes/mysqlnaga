@@ -93,9 +93,10 @@ sub _process_table {
 	
 	verbose("\tWorking on table '${table}'");
 	
-	_nuke($table);
-	
 	my @files = _find_in_dir(qr/^$table\./xms);
+	
+	_nuke($table) if (scalar(@files) > 1);
+	
 	foreach my $file (@files) {
 		verbose("\t\tLoading $file");
 		_load($table, $file);
