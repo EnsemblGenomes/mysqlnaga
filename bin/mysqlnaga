@@ -215,7 +215,7 @@ sub _write_to_file {
 
   my $writer = sub {
     for ( my $i = 0 ; $i < $count ; $i++ ) {
-      my $record = ($_[$i]) ? $_[$i] : '\N';
+      my $record = (defined $_[$i]) ? $_[$i] : '\N';
       print $fh "${FEB}${record}${FEB}";
       print $fh $FTB if ( $i != $max_index );
     }
