@@ -1,0 +1,403 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+our $VERSION = '1.0';
+
+use Getopt::Long;
+use File::Basename;
+use File::Spec;
+use Carp;
+use DBI;
+use Pod::Usage;
+
+my $OPTIONS = _parse_options();
+
+my $DB      = $OPTIONS->{database};
+my $DIR     = $OPTIONS->{directory};
+my $VERBOSE = $OPTIONS->{verbose};
+
+my @TABLES = _tables();
+my %TABLE_STATUS = _table_status();
+
+process_db();
+exit 0;
+
+sub process_db {
+  verbose("Working on database '${DB}'");
+  foreach my $table ( _tables() ) {
+    _process_table($table);
+  }
+  verbose("Finished with database '${DB}'");
+  return;
+}
+
+sub verbose {
+  if ($VERBOSE) {
+    print STDERR @_, "\n";
+  }
+  return;
+}
+
+sub _process_table {
+  my ($table) = @_;
+
+  verbose("\tWorking on table '${table}'");
+  my $dbh = _open_dbh();
+  
+  my $q_table = $dbh->quote_identifier($table);
+  my $absolute_table = File::Spec->rel2abs(File::Spec->catfile($DIR, $table));
+  my $absolute_table_index = $absolute_table.'.MYI';
+
+  if(! exists $TABLE_STATUS{$table}) {
+    confess("Nothing is known about the table '${table}; try again");  
+  }
+  
+  my ($engine, $format) = @{$TABLE_STATUS{$table}};
+  
+  if($engine ne 'MyISAM') {
+    confess("The information_schema does not report '${table}' to be MyISAM; check and try again");
+  }
+  
+  if(! $OPTIONS->{decompress} && $format eq 'Compressed') {
+    $dbh->disconnect();
+    verbose("\tNot continuing as the table is already compressed");
+    return;
+  }
+  if($OPTIONS->{decompress} && $format ne 'Compressed') {
+    $dbh->disconnect();
+    verbose("\tNot continuing as the table is already decompressed");
+    return;
+  }
+  
+  my $lock_mode = ($OPTIONS->{decompress}) ? 'read' : 'write';
+  
+  verbose("\tLocking for $lock_mode");
+  $dbh->do(sprintf('lock tables %s %s', $q_table, $lock_mode));
+
+  verbose("\tFlushing table");
+  $dbh->do(sprintf('flush table %s', $q_table));
+  
+  if($OPTIONS->{decompress}) {
+    verbose("\tDecompressing");
+    _system("myisamchk -u $absolute_table_index", 1);
+  }
+  else {
+    verbose("\tChecking MyISAM table");
+    _system("myisamchk -cFU $absolute_table");
+    
+    verbose("\tCompressing");
+    _system("myisampack -f $absolute_table_index", 1);
+    
+    verbose("\tChecking MyISAM table");
+    _run_chk($absolute_table_index);
+  }
+  
+  verbose("\tSorting out permissions");
+  if($OPTIONS->{group}) {
+    my $group = $OPTIONS->{group};
+    _system("chgrp ${group} ${absolute_table}.M*");
+  }
+  _system("chmod ug+rw ${absolute_table}.M*");
+  
+  verbose("\tRemoving $lock_mode lock");
+  $dbh->do('unlock tables');
+  
+  verbose("\tFlushing table");
+  $dbh->do('flush tables');
+  
+  $dbh->disconnect();
+
+  verbose("\tFinished table");
+  return;
+}
+
+sub _table_status {
+  my $dbh = _open_dbh('information_schema');
+  my $sth = $dbh->prepare('select TABLE_NAME, ENGINE, ROW_FORMAT from information_schema.TABLES where TABLE_SCHEMA =?');
+  $sth->execute($DB);
+  my %results;
+  while( my $row = $sth->fetchrow_arrayref()) {
+    $results{$row->[0]} = [ $row->[1], $row->[2] ];
+  }
+  $sth->finish();
+  $dbh->disconnect();
+  return %results;  
+}
+
+sub _parse_options {
+  my @options = qw(
+    directory=s
+    group=s
+    decompress
+    host=s
+    password=s
+    port=i
+    tables=s@
+    user=s
+    verbose
+    version
+    sort_buffer_size=s
+    key_buffer_size=s
+    read_buffer_size=s
+    write_buffer_size=s
+    help|?
+    man
+  );
+
+  my $opts = {};
+
+  GetOptions( $opts, @options ) or pod2usage(2);
+  pod2usage(1) if $opts->{help};
+  pod2usage( -exitstatus => 0, -verbose => 2 ) if $opts->{man};
+  if ( $opts->{version} ) {
+    print "mysqlnaga-compress version $VERSION\n";
+    exit(0);
+  }
+  _confirm_options($opts);
+  return $opts;
+}
+
+sub _confirm_options {
+  my ($opts) = @_;
+  _optional_set( $opts, 'directory', '.' );
+  $opts->{database} = basename(File::Spec->rel2abs($opts->{directory}));
+  return;
+}
+
+sub _optional_set {
+  my ( $opts, $key, $default ) = @_;
+  $opts->{$key} = $default unless $opts->{$key};
+  return;
+}
+
+sub _open_dbh {
+  my ($incoming_db) = @_;
+  my ( $hostname, $port, $user, $password, $db) = (
+    ( $OPTIONS->{host} )            ? ";host=$OPTIONS->{host}" : '',
+    ( $OPTIONS->{port} )            ? ";port=$OPTIONS->{port}" : '',
+    ( $OPTIONS->{user} )            ? $OPTIONS->{user}         : undef,
+    ( $OPTIONS->{password} )        ? $OPTIONS->{password}     : undef,
+    ( $incoming_db )                ? $incoming_db             : $DB
+  );
+  my $dsn = "DBI:mysql:database=${db}${hostname}${port}";
+  my $dbh = DBI->connect( $dsn, $user, $password, { RaiseError => 1 } );
+  return $dbh;
+}
+
+sub _run_chk {
+  my ($index_location) = @_;
+  my $key_buffer    = ($OPTIONS->{key_buffer_size})   ? '--key_buffer_size='  .$OPTIONS->{key_buffer_size} : '';
+  my $sort_buffer   = ($OPTIONS->{sort_buffer_size})  ? '--sort_buffer_size=' .$OPTIONS->{sort_buffer_size} : '';
+  my $read_buffer   = ($OPTIONS->{read_buffer_size})  ? '--read_buffer_size=' .$OPTIONS->{read_buffer_size} : '';
+  my $write_buffer  = ($OPTIONS->{write_buffer_size}) ? '--write_buffer_size='.$OPTIONS->{write_buffer_size} : '';
+  my $cmd = "myisamchk ${key_buffer} ${sort_buffer} ${read_buffer} ${write_buffer} -rq $index_location";
+  _system($cmd);
+  return;
+}
+
+sub _system {
+  my ($cmd, $ignore_error) = @_;
+  my $redirect = ($VERBOSE) ? q{} : ' 2> /dev/null 1> /dev/null';
+  my $error = system($cmd.$redirect);
+  if(! $ignore_error && $error) {
+    confess("System cmd '${cmd}' did not finish well: $!");
+  }
+  return;
+}
+
+sub _tables {
+  my @tables;
+  if ( $OPTIONS->{tables} ) {
+    @tables = split( /,/, join( ',', @{ $OPTIONS->{tables} } ) );
+  }
+  else {
+    my $dir = $OPTIONS->{directory};
+    opendir(my $dh, $dir) || confess "can't opendir $dir: $!";
+    @tables = 
+      map  { my $t = $_; $t =~ s/\.MYI\Z//xms; $t; } 
+      grep { $_ =~ /\.MYI\Z/xms } 
+      readdir($dh);
+    closedir $dh;
+  }
+  return @tables;
+}
+
+__END__
+
+=pod
+
+=head1 NAME
+
+mysqlnaga-compress
+
+=head1 SYNOPSIS
+
+	./mysqlnaga-compress [-directory DIR] [-group GRP] [--decompress] [-host HOST] [-port PORT] [-user USER] [-pass PASS] [more options in -h]
+
+=head1 DESCRIPTION
+
+The formalisation of MyISAM compression which attempts to:
+
+=over 8
+
+=item Connect to the database
+
+=item lock a table for write
+
+=item flush the table
+
+=item check it
+
+=item pack the table
+
+=item rebuild indexes
+
+=item chgrp to a valid group
+
+=item unlock
+
+=item flush the tables (have to do this after the unlock)
+
+=item Disconnect from the database
+
+=back
+
+This compression can only be performed over MyISAM tables and forcing it to
+run over any other type will cause an error to be raised. Because this is using
+admin actions make sure you give the command an admin level of access and
+ensure that B<myisamchk> and B<myisampack> are avaible on your PATH and
+are of a compatible version.
+
+If you believe that the disconnect reconnect pattern is causing a problem
+then look into increasing the persistent thread pool in MySQL which will
+allow for thread reuse limiting the overhead of a reconnect to reusing
+an existing thread.
+
+Should you specify the C<--decompress> flag then this will be run in
+reverse however when decompressing we only run the myisamchk command since this
+deals with the decompression algorithm.
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--directory>
+
+The directory find tables in; if not specified will default to the current 
+working directory.
+
+=item B<--group>
+
+A string which should be the group these files must belong to. We will also
+ensure that the group and user has read/write access to them. If 
+not specified then we do not perform the chgrp command. 
+
+=item B<--decompress>
+
+Specify when you wish to run the procedure in reverse
+
+=item B<--host>
+
+Host the MySQL server is located on
+
+=item B<--password>
+
+Password for the target server
+
+=item B<--port>
+
+Port for the server
+
+=item B<--tables>
+
+Tables to compress. If not given then all are MyISAM tables are assumed
+
+=item B<--user>
+
+User to connect to the DB with
+
+=item B<--key_buffer_size>
+
+The amount of RAM to assign to the key buffer for myisamchk
+
+=item B<--sort_buffer_size>
+
+The amount of RAM to assign to the sort buffer for myisamchk (normally an
+important buffer)
+
+=item B<--read_buffer_size>
+
+The amount of RAM to assign to the read buffer for myisamchk (how much data
+we can hold in memory at once)
+
+=item B<--write_buffer_size>
+
+The amount of RAM to assign to the write buffer for myisamchk (the more RAM
+the less number of writes we need to do)
+
+=item B<--verbose>
+
+Print verbose logging messages along with the dump. These go to STDERR
+
+=item B<--version>
+
+Print vesion and exit
+
+=item B<--help | --?>
+
+This message
+
+=item B<--man>
+
+Perldoc with more information than -help alone
+
+=back
+
+=head1 DEPENDENCIES
+
+Only DBD::mysql. All others are core Perl modules.
+
+=head1 WHY NAGA
+
+Because the program attempts to be smoking hot at anything it does.
+
+=head1 AUTHOR
+
+Andrew Yates
+
+=head1 LICENSE
+
+Copyright (c) 2010, ANDREW YATES
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without 
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, 
+  this list of conditions and the following disclaimer.
+* Redistributions in binary form must reproduce the above copyright notice, 
+  this list of conditions and the following disclaimer in the documentation 
+  and/or other materials provided with the distribution.
+* Neither the name of ANDREW YATES PERSONAL DEVELOPMENT nor the names of its 
+  contributors may be used to endorse or promote products derived from this 
+  software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE 
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE 
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE 
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR 
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF 
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS 
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN 
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) 
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF 
+THE POSSIBILITY OF SUCH DAMAGE.
+
+=head1 VERSION
+
+1.0
+
+=cut
