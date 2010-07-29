@@ -5,17 +5,21 @@ use warnings;
 
 our $VERSION = '1.0';
 
-use Getopt::Long;
-use File::Basename;
-use File::Spec;
 use Carp;
 use DBI;
+use File::Basename;
+use File::Find;
+use File::Spec;
+use File::stat;
+use Getopt::Long;
 use Pod::Usage;
+use User::pwent;
 
 my $OPTIONS = _parse_options();
 
 my $DB      = $OPTIONS->{database};
 my $DIR     = $OPTIONS->{directory};
+my $ABS_DIR = File::Spec->rel2abs($DIR);
 my $VERBOSE = $OPTIONS->{verbose};
 
 my @TABLES = _tables();
@@ -93,13 +97,27 @@ sub _process_table {
     verbose("\tChecking MyISAM table");
     _run_chk($absolute_table_index);
   }
-  
-  verbose("\tSorting out permissions");
+    
   if($OPTIONS->{group}) {
+    verbose("\tSorting out permissions");
     my $group = $OPTIONS->{group};
-    _system("chgrp ${group} ${absolute_table}.M*");
+    my $regex = qr/\A${table}\.MY.\Z/xms;
+    my $user = getlogin();
+    my $pw = getpwnam($user) or croak("Cannot invoke getpwnam() for username $user");
+    find(sub {
+      if($_ =~ $regex) {
+        my $full_name = $File::Find::name;
+        my $is_mine = (stat($full_name)->uid == $pw->uid());
+        if($is_mine) {
+          _system("chgrp ${group} ${full_name}");
+          _system("chmod ug+rw ${full_name}");          
+        }
+      }
+    }, $ABS_DIR);
   }
-  _system("chmod ug+rw ${absolute_table}.M*");
+  else {
+    verbose("\tSkipping permission setting as we did not specify a group");
+  }
   
   verbose("\tRemoving $lock_mode lock");
   $dbh->do('unlock tables');
