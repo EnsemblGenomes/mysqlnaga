@@ -1,0 +1,457 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+our $VERSION = '1.0';
+
+use DateTime;
+use DateTime::Format::MySQL;
+use DBI;
+use File::Spec;
+use Getopt::Long;
+use Pod::Usage;
+
+my $OPTIONS = _parse_options();
+
+my $DB      = $OPTIONS->{database};
+my $VERBOSE = $OPTIONS->{verbose};
+
+my $SOURCE_DBH    = _open_dbh('source');
+my $TARGET_DBH    = _open_dbh('target');
+
+my $SOURCE_TABLES = _schema_information($SOURCE_DBH);
+
+process_db();
+exit 0;
+
+sub process_db {
+  verbose("Working on database '${DB}'");
+  
+  if(! _has_database($TARGET_DBH)) {
+    verbose('DB does not exist on the target server; creating');
+    _create_database($TARGET_DBH);
+  }
+  
+  my $TARGET_TABLES = _schema_information($TARGET_DBH);
+  _switch_db($SOURCE_DBH);
+  _switch_db($TARGET_DBH);
+  
+  foreach my $table ( sort keys %{$SOURCE_TABLES} ) {
+    _process_table($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table});
+  }
+  
+  verbose("Finished with database '${DB}'");
+  
+  return;
+}
+
+sub verbose {
+  if ($VERBOSE) {
+    print STDERR @_, "\n";
+  }
+  return;
+}
+
+sub _process_table {
+  my ($table, $source_info, $target_info) = @_;
+
+  verbose("\tWorking on table '${table}'");
+
+  my $drop_table = 0;
+  my $populate_table = 0;
+
+  if(defined $target_info) {
+    #Populate only if source is younger than target
+    if($OPTIONS->{date}) {
+      #Returns -1 if source was older than target, 0 if equal & 1 if younger
+      #i.e. same situation which means we need to populate
+      my $cmp = DateTime->compare_ignore_floating(
+        $source_info->{date}, $target_info->{date});
+      $drop_table = ($cmp > 0) ? 1 : 0;
+      $populate_table = $drop_table;
+    }
+    #Populate if counts differ
+    elsif($OPTIONS->{count}) {
+      if($source_info->{count} != $target_info->{count}) {
+        $drop_table = 1;
+        $populate_table = 1;
+      }
+    }
+    #Populate if checksums differ
+    elsif($OPTIONS->{checksum}) {
+      my $src = _checksum($SOURCE_DBH, $table);
+      my $trg = _checksum($TARGET_DBH, $table);
+      $drop_table = $src ne $trg ;
+      $populate_table = $drop_table;
+    }
+    else {
+      die 'You have not said how to compare these schemas. Check the help';
+    }
+  }
+  else {
+    $populate_table = 1;
+  }
+  
+  if($drop_table) {
+    verbose("\tTable must be dropped");
+    _drop_table($TARGET_DBH, $table);
+  }
+  
+  if($populate_table) {
+    verbose("\tTable must be repopulated");
+    _populate_table($table);
+  }
+  else {
+    verbose("\tTable is okay according to the used test");
+  }
+
+  verbose("\tFinished table");
+  return;
+}
+
+sub _parse_options {
+  my @options = qw(
+    checksum
+    count
+    date
+    directory=s
+    database=s
+    host=s
+    password=s
+    port=i
+    targethost=s
+    targetpassword=s
+    targetport=s
+    targetuser=s
+    user=s
+    verbose
+    version
+    help|?
+    man
+  );
+
+  my $opts = {};
+
+  GetOptions( $opts, @options ) or pod2usage(2);
+  pod2usage(1) if $opts->{help};
+  pod2usage( -exitstatus => 0, -verbose => 2 ) if $opts->{man};
+  if ( $opts->{version} ) {
+    print "mysqlnaga-sync version $VERSION\n";
+    exit(0);
+  }
+  _confirm_options($opts);
+  return $opts;
+}
+
+sub _confirm_options {
+  my ($opts) = @_;
+
+  if ( !$opts->{database} ) {
+    print STDERR "Need a schema to work with\n";
+    pod2usage(1);
+  }
+  
+  _optional_set( $opts, 'directory', '.' );
+  
+  $opts->{directory} = File::Spec->rel2abs($opts->{directory});
+
+  return;
+}
+
+sub _optional_set {
+  my ( $opts, $key, $default ) = @_;
+  $opts->{$key} = $default unless $opts->{$key};
+  return;
+}
+
+sub _open_dbh {
+	my ($type) = @_;
+
+	my $details = {
+		source => [
+			$OPTIONS->{host}, 
+			$OPTIONS->{port}, 
+			$OPTIONS->{user}, 
+			$OPTIONS->{password},
+			'information_schema'
+		],
+		target => [
+			$OPTIONS->{targethost} || $OPTIONS->{host}, 
+			$OPTIONS->{targetport} || $OPTIONS->{port}, 
+			$OPTIONS->{targetuser} || $OPTIONS->{user}, 
+			$OPTIONS->{targetpassword} || $OPTIONS->{password},
+		  'information_schema'	
+		]
+	}->{$type};
+	
+	my ($hostname, $port, $user, $password, $db) = (
+		($details->[0])     ? ";host=$details->[0]" : '',
+		($details->[1])     ? ";port=$details->[1]" : '',
+		($details->[2])     ? $details->[2]         : undef,
+		($details->[3])     ? $details->[3]         : undef,
+		$details->[4]
+	);
+	my $dsn = "DBI:mysql:database=${db}${hostname}${port}";
+	my $dbh = DBI->connect($dsn, $user, $password, {RaiseError => 1});
+	return $dbh;
+}
+
+sub _schema_information {
+  my ($dbh) = @_;
+  my $schema_hash = {};
+  my $sql = <<'SQL';
+select TABLE_NAME, CREATE_TIME, UPDATE_TIME, TABLE_ROWS 
+from information_schema.TABLES 
+where TABLE_SCHEMA =?
+SQL
+  my $sth = $dbh->prepare($sql);
+  $sth->execute($OPTIONS->{database});
+  while(my $row = $sth->fetchrow_arrayref()) {
+    my ($table, $created, $modified, $count) = @{$row};
+    my $date = (defined $modified) ? $modified : $created; 
+    $schema_hash->{$table} = {
+      date => DateTime::Format::MySQL->parse_datetime($date),
+      count => $count
+    };
+  }
+  $sth->finish();
+  return $schema_hash;
+}
+
+sub _has_database {
+  my ($dbh) = @_;
+  my $sth = $dbh->prepare('show databases like ?');
+  $sth->execute($OPTIONS->{database});
+  my $has_database = 0;
+  if(my $row = $sth->fetchrow_arrayref()) {
+    $has_database = 1;
+  }
+  $sth->finish();
+  return $has_database;
+}
+
+sub _create_database {
+  my ($dbh) = @_;
+  my $q_db = $dbh->quote_identifier($OPTIONS->{database});
+  $dbh->do('create database '.$q_db);
+  return;
+}
+
+sub _switch_db {
+  my ($dbh) = @_;
+  my $q_db = $dbh->quote_identifier($OPTIONS->{database});
+  $dbh->do('use '.$q_db);
+  return;
+}
+
+sub _checksum {
+  my ($dbh, $table) = @_;
+  my $q_table = $dbh->quote_identifier($table);
+  my $sql = "CHECKSUM TABLE ${q_table}";
+  my @row_ary = $dbh->selectrow_array($sql);
+  return pop @row_ary;
+}
+
+sub _drop_table {
+  my ($dbh, $table) = @_;
+  my $q_table = $dbh->quote_identifier($table);
+  my $sql = "DROP TABLE ${q_table}";
+  $dbh->do($sql);
+  return;
+}
+
+sub _populate_table {
+  my ($table) = @_;
+  
+  verbose("\tCreating table from source schema");
+  my $q_table = $SOURCE_DBH->quote_identifier($table);
+  my $sql = "SHOW CREATE TABLE ${q_table}";
+  my @row_ary = $SOURCE_DBH->selectrow_array($sql);
+  $TARGET_DBH->do(pop(@row_ary));
+  
+  verbose("\tWriting table data out");
+  my $filename = _tmp_file();
+  my $write_data_out_sql = <<SQL;
+SELECT * from ${q_table} INTO OUTFILE '${filename}'
+FIELDS ESCAPED BY '\\\\'
+SQL
+  $SOURCE_DBH->do("LOCK TABLES ${q_table} READ");
+  $SOURCE_DBH->do($write_data_out_sql);
+  $SOURCE_DBH->do('UNLOCK TABLES');
+  
+  verbose("\tPopulating table data");
+  my $write_data_in_sql = <<SQL;
+LOAD DATA INFILE '${filename}' INTO TABLE ${q_table}
+FIELDS ESCAPED BY '\\\\'
+SQL
+  $TARGET_DBH->do("LOCK TABLES ${q_table} WRITE");
+  $TARGET_DBH->do($write_data_in_sql);
+  $TARGET_DBH->do("UNLOCK TABLES");
+  
+  unlink $filename;
+  
+  return;
+}
+
+sub _tmp_file {
+  return File::Spec->catfile($OPTIONS->{directory}, 'mysqlnagasync-transfer.txt');
+}
+
+__END__
+
+=pod
+
+=head1 NAME
+
+mysqlnaga-sync
+
+=head1 SYNOPSIS
+
+	./mysqlnaga-sync -database DB [-directory DIR] [-host HOST] [-port PORT] [-user USER] [-pass PASS] [more options in -h]
+
+=head1 DESCRIPTION
+
+Provides a functionality similar to the mysqlnaga and mysqlnaga-loader scripts
+except in this situation we do the transfer of data only if
+
+=over 8
+
+=item A table does not exist in the target schema
+
+=item The last time the source schema's table was modified was after the target's last modified time
+
+=item Row counts differ
+
+=item Checksums differ
+
+=back
+
+You can choose one of these strategies to detect when a transfer should occur
+however the recommened is last modified time as this requires the smallest 
+amount of work from the database.  
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--checksum>
+
+Use MySQL checksums to calculate if a table has changed
+
+=item B<--count>
+
+Use row counts to calculate if a table has changed
+
+=item B<--date>
+
+Use the last modified date/created date to calculate if a table has changed
+
+=item B<--directory>
+
+The directory to dump text files to. If not specified the program will use
+the cwd. Must be a directory the database server can write to.
+
+=item B<--database>
+
+The database to work with
+
+=item B<--host>
+
+Host the MySQL server is located on
+
+=item B<--password>
+
+Password for the target server
+
+=item B<--port>
+
+Port for the server
+
+=item B<--user>
+
+User to connect to the DB with
+
+=item B<--targethost>
+
+Host the target MySQL server is located on
+
+=item B<--targetpassword>
+
+Password for the target server
+
+=item B<--targetport>
+
+Port for the target server
+
+=item B<--targetuser>
+
+User to connect to the target DB with
+
+=item B<--verbose>
+
+Print verbose logging messages along with the dump. These go to STDERR
+
+=item B<--version>
+
+Print vesion and exit
+
+=item B<--help | --?>
+
+This message
+
+=item B<--man>
+
+Perldoc with more information than -help alone
+
+=back
+
+=head1 DEPENDENCIES
+
+=over 8
+
+=item DBD::mysql
+
+=item DateTime
+
+=item DateTime::Format::MySQL
+
+=back
+
+=head1 WHY NAGA
+
+Because the program attempts to be smoking hot at copying databases. Also
+naga is a lot smaller the jalepeno (and easier to remember).
+
+=head1 AUTHOR
+
+Andrew Yates
+
+=head1 LICENSE
+
+Copyright (c) 2010, EMBL
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+* Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+* Neither the name of the EMBL nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE 
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE 
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE 
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR 
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF 
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS 
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN 
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) 
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF 
+THE POSSIBILITY OF SUCH DAMAGE.
+
+=head1 VERSION
+
+1.0
+
+=cut
