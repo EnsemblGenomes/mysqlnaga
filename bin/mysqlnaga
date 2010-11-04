@@ -21,6 +21,7 @@ my $LTB     = $OPTIONS->{'lines-terminated-by'};
 my $FTB     = $OPTIONS->{'fields-terminated-by'};
 my $FEB     = $OPTIONS->{'fields-optionally-enclosed-by'};
 my $VERBOSE = $OPTIONS->{verbose};
+my $LOCK    = $OPTIONS->{lock};
 
 my $DBH    = _open_dbh();
 my @TABLES = _tables();
@@ -35,7 +36,14 @@ my %BINARY_COLUMNS = (
   BINARY => 1
 );
 
+my $ERROR_DETECTED = 0;
+
 process_db();
+
+if($ERROR_DETECTED) {
+  print "Problem detected whilst dumping; consult STDERR for more information\n";
+  exit 1;
+}
 exit 0;
 
 sub process_db {
@@ -58,15 +66,35 @@ sub verbose {
 sub _process_table {
   my ($table) = @_;
 
-  verbose("\tWorking on table '${table}'");
-
-  my $sth = _open_sth($table);
-  verbose("\tSelecting rows");
-  $sth->execute();
-  verbose("\tWriting to file");
-  _write_to_file( $sth, $table );
-
-  $sth->finish();
+  if(_is_table_there($table)) {
+    verbose("\tWorking on table '${table}'");
+    eval {
+      if($LOCK) {
+        verbose("\tLocking '${table}'");
+        my $q_table = $DBH->quote_identifier($table);
+        $DBH->do('LOCK TABLES '.$q_table.' WRITE');
+      }
+      my $sth = _open_sth($table);
+      verbose("\tSelecting rows");
+      $sth->execute();
+      verbose("\tWriting to file");
+      _write_to_file( $sth, $table );
+      $sth->finish();
+      
+      if($LOCK) {
+        verbose("\tUnlocked");
+        $DBH->do('UNLOCK TABLES');
+      }
+    };
+    if($@) {
+      print STDERR "Picked up on an error whilst processing ${table}: $@\n";
+      $ERROR_DETECTED = 1;
+    }
+  }
+  else {
+    print STDERR "The specified table '${table}' was no longer present; cannot dump data\n";
+    $ERROR_DETECTED = 1;
+  }
 
   verbose("\tFinished table");
   return;
@@ -82,6 +110,7 @@ sub _parse_options {
     fields-terminated-by=s
     host=s
     lines-terminated-by=s
+    lock
     password=s
     port=i
     tables=s@
@@ -149,11 +178,7 @@ sub _tables {
     @tables = split( /,/, join( ',', @{ $OPTIONS->{tables} } ) );
   }
   else {
-    my $sth = $DBH->table_info( undef, $OPTIONS->{database}, '%' );
-    while ( my $row = $sth->fetchrow_arrayref() ) {
-      push( @tables, $row->[2] );
-    }
-    $sth->finish();
+    @tables = _list_tables();
   }
   return @tables;
 }
@@ -241,12 +266,24 @@ sub _dump_sql {
   my $fh = _open_file("${DB}.sql");
 
   foreach my $table (@TABLES) {
-    my $sth = $DBH->prepare("show create table ${table}");
-    $sth->execute();
-    while ( my $row = $sth->fetchrow_arrayref() ) {
-      print $fh $row->[1], ';', "\n" x 2;
+    if(_is_table_there($table)) {
+      eval{
+        my $sth = $DBH->prepare("show create table ${table}");
+        $sth->execute();
+        while ( my $row = $sth->fetchrow_arrayref() ) {
+          print $fh $row->[1], ';', "\n" x 2;
+        }
+        $sth->finish();
+      };
+      if($@) {
+        print STDERR "Picked up on an error whilst processing ${table}: $@\n";
+        $ERROR_DETECTED = 1;
+      }
     }
-    $sth->finish();
+    else {
+      print STDERR "The specified table '${table}' was no longer present; cannot dump SQL\n";
+      $ERROR_DETECTED = 1;
+    }
   }
 
   close $fh;
@@ -285,6 +322,23 @@ sub _set_max_long_read_length {
   return;
 }
 
+sub _is_table_there {
+  my ($table) = @_;
+  return (_list_tables($table)) ? 1 : 0;
+}
+
+sub _list_tables {
+  my ($table) = @_;
+  $table ||= '%';
+  my @tables;
+  my $sth = $DBH->table_info( undef, $OPTIONS->{database}, $table );
+  while ( my $row = $sth->fetchrow_arrayref() ) {
+    push( @tables, $row->[2] );
+  }
+  $sth->finish();
+  return @tables;
+}
+
 __END__
 
 =pod
@@ -321,6 +375,10 @@ If turned on will force the usage of mysql_use_result which uses less
 memory & is faster but tends to block other processes. If you want the fastest
 way to dump this is it but if you are grabbing dumps from a live schema
 DO NOT use this option.
+
+=item B<--lock>
+
+If specified will issue a write lock onto the table before doing the dump.
 
 =item B<--directory>
 
