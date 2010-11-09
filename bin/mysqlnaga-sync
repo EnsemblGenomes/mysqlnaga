@@ -5,6 +5,7 @@ use warnings;
 
 our $VERSION = '1.0';
 
+use Cwd;
 use DateTime;
 use DateTime::Format::MySQL;
 use DBI;
@@ -274,6 +275,10 @@ sub _mysqlnaga_populate_table {
   my ($table) = @_;
   
   _copy_table_ddl($table);
+  
+  my $cwd = cwd();
+  chdir(_dir());
+  
   verbose("\tWriting table data out");
   my @mysqlnaga_options;
   push(@mysqlnaga_options, q{--host}, $OPTIONS->{host}) if $OPTIONS->{host};
@@ -281,7 +286,7 @@ sub _mysqlnaga_populate_table {
   push(@mysqlnaga_options, q{--user}, $OPTIONS->{user}) if $OPTIONS->{user};
   push(@mysqlnaga_options, q{--pass}, $OPTIONS->{password}) if $OPTIONS->{password};
   push(@mysqlnaga_options, q{--verbose}) if $OPTIONS->{verbose};
-  push(@mysqlnaga_options, q{--database}, $OPTIONS->{database});
+  push(@mysqlnaga_options, q{--database}, cwd());
   push(@mysqlnaga_options, q{--tables}, $table);
   push(@mysqlnaga_options, q{--fields-optionally-enclosed-by}, q{'`'});
   
@@ -295,12 +300,14 @@ sub _mysqlnaga_populate_table {
   push(@mysqlnaga_loader_options, q{--user}, $OPTIONS->{targetuser} || $OPTIONS->{user}) if $OPTIONS->{targetuser} || $OPTIONS->{user};
   push(@mysqlnaga_loader_options, q{--pass}, $OPTIONS->{targetpassword} || $OPTIONS->{password}) if $OPTIONS->{targetpassword} || $OPTIONS->{password};
   push(@mysqlnaga_loader_options, q{--verbose}) if $OPTIONS->{verbose};
-  push(@mysqlnaga_loader_options, q{--database}, $OPTIONS->{database});
+  push(@mysqlnaga_loader_options, q{--database}, cwd());
   push(@mysqlnaga_loader_options, q{--tables}, $table);
   push(@mysqlnaga_loader_options, q{--fields-optionally-enclosed-by}, q{'`'});
   
   my $mysqlnaga_loader_cmd = join q{ }, 'mysqlnaga-loader', @mysqlnaga_options;
   system($mysqlnaga_loader_cmd) and die "Could not complete the load with the command '$mysqlnaga_loader_cmd': $!";
+  
+  chdir($cwd);
   
   return;
 }
@@ -350,14 +357,19 @@ SQL
   return;
 }
 
-sub _file {
-  my ($table, $ext) = @_;
+sub _dir {
   my $dir = File::Spec->catdir($OPTIONS->{directory}, $OPTIONS->{database});
   if(! -d $dir) {
     make_path($dir, {verbose => 0}) or die "Cannot create directory $dir: $!";
     my $mode = 0777;
     chmod $mode, $dir or die "Cannot chmod $dir to mode $mode: $!"; 
   }
+  return $dir;
+}
+
+sub _file {
+  my ($table, $ext) = @_;
+  my $dir = _dir();
   my $filename = File::Spec->catfile($dir, $table.'.'.$ext);
   if(-f $filename) {
     verbose("\tFile $filename already exists. Removing");
