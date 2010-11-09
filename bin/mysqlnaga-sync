@@ -286,7 +286,8 @@ sub _mysqlnaga_populate_table {
   push(@mysqlnaga_options, q{--user}, $OPTIONS->{user}) if $OPTIONS->{user};
   push(@mysqlnaga_options, q{--pass}, $OPTIONS->{password}) if $OPTIONS->{password};
   push(@mysqlnaga_options, q{--verbose}) if $OPTIONS->{verbose};
-  push(@mysqlnaga_options, q{--database}, cwd());
+  push(@mysqlnaga_options, q{--database}, $OPTIONS->{database});
+  push(@mysqlnaga_options, q{--directory}, cwd());
   push(@mysqlnaga_options, q{--tables}, $table);
   push(@mysqlnaga_options, q{--fields-optionally-enclosed-by}, q{'`'});
   
@@ -300,7 +301,8 @@ sub _mysqlnaga_populate_table {
   push(@mysqlnaga_loader_options, q{--user}, $OPTIONS->{targetuser} || $OPTIONS->{user}) if $OPTIONS->{targetuser} || $OPTIONS->{user};
   push(@mysqlnaga_loader_options, q{--pass}, $OPTIONS->{targetpassword} || $OPTIONS->{password}) if $OPTIONS->{targetpassword} || $OPTIONS->{password};
   push(@mysqlnaga_loader_options, q{--verbose}) if $OPTIONS->{verbose};
-  push(@mysqlnaga_loader_options, q{--database}, cwd());
+  push(@mysqlnaga_options, q{--database}, $OPTIONS->{database});
+  push(@mysqlnaga_options, q{--directory}, cwd());
   push(@mysqlnaga_loader_options, q{--tables}, $table);
   push(@mysqlnaga_loader_options, q{--fields-optionally-enclosed-by}, q{'`'});
   
