@@ -304,7 +304,7 @@ sub _mysqlnaga_populate_table {
   push(@mysqlnaga_loader_options, q{--tables}, $table);
   push(@mysqlnaga_loader_options, q{--fields-optionally-enclosed-by}, q{'`'});
   
-  my $mysqlnaga_loader_cmd = join q{ }, 'mysqlnaga-loader', @mysqlnaga_options;
+  my $mysqlnaga_loader_cmd = join q{ }, 'mysqlnaga-loader', @mysqlnaga_loader_options;
   system($mysqlnaga_loader_cmd) and die "Could not complete the load with the command '$mysqlnaga_loader_cmd': $!";
   
   chdir($cwd);
