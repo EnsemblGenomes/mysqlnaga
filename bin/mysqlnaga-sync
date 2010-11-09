@@ -101,7 +101,14 @@ sub _process_table {
   
   if($populate_table) {
     verbose("\tTable must be repopulated");
-    _populate_table($table);
+    if($OPTIONS->{'use-naga'}) {
+      verbose("\tUsing naga");
+      _mysqlnaga_populate_table($table);
+    }
+    else {
+      verbose("\tUsing mysqldump");
+      _mysqldump_populate_table($table);
+    }
   }
   else {
     verbose("\tTable is okay according to the used test");
@@ -126,6 +133,7 @@ sub _parse_options {
     targetport=s
     targetuser=s
     user=s
+    use-naga
     verbose
     version
     help|?
@@ -262,7 +270,42 @@ sub _drop_table {
   return;
 }
 
-sub _populate_table {
+sub _mysqlnaga_populate_table {
+  my ($table) = @_;
+  
+  _copy_table_ddl($table);
+  verbose("\tWriting table data out");
+  my @mysqlnaga_options;
+  push(@mysqlnaga_options, q{--host}, $OPTIONS->{host}) if $OPTIONS->{host};
+  push(@mysqlnaga_options, q{--port}, $OPTIONS->{port}) if $OPTIONS->{port};
+  push(@mysqlnaga_options, q{--user}, $OPTIONS->{user}) if $OPTIONS->{user};
+  push(@mysqlnaga_options, q{--pass}, $OPTIONS->{pass}) if $OPTIONS->{pass};
+  push(@mysqlnaga_options, q{--verbose}) if $OPTIONS->{verbose};
+  push(@mysqlnaga_options, q{--database}, $OPTIONS->{database});
+  push(@mysqlnaga_options, q{--tables}, $table);
+  push(@mysqlnaga_options, q{--fields-optionally-enclosed-by}, q{'`'});
+  
+  my $mysqlnaga_cmd = join q{ }, 'mysqlnaga', @mysqlnaga_options;
+  system($mysqlnaga_cmd) and die "Could not complete the dump with the command '$mysqlnaga_cmd': $!";
+  
+  verbose("\tPopulating table data");
+  my @mysqlnaga_loader_options;
+  push(@mysqlnaga_loader_options, q{--host}, $OPTIONS->{targethost} || $OPTIONS->{host}) if $OPTIONS->{targethost} || $OPTIONS->{host};
+  push(@mysqlnaga_loader_options, q{--port}, $OPTIONS->{targetport} || $OPTIONS->{port}) if $OPTIONS->{targetport} || $OPTIONS->{port};
+  push(@mysqlnaga_loader_options, q{--user}, $OPTIONS->{targetuser} || $OPTIONS->{user}) if $OPTIONS->{targetuser} || $OPTIONS->{user};
+  push(@mysqlnaga_loader_options, q{--pass}, $OPTIONS->{targetpass} || $OPTIONS->{pass}) if $OPTIONS->{targetpass} || $OPTIONS->{pass};
+  push(@mysqlnaga_loader_options, q{--verbose}) if $OPTIONS->{verbose};
+  push(@mysqlnaga_loader_options, q{--database}, $OPTIONS->{database});
+  push(@mysqlnaga_loader_options, q{--tables}, $table);
+  push(@mysqlnaga_loader_options, q{--fields-optionally-enclosed-by}, q{'`'});
+  
+  my $mysqlnaga_loader_cmd = join q{ }, 'mysqlnaga-loader', @mysqlnaga_options;
+  system($mysqlnaga_loader_cmd) and die "Could not complete the load with the command '$mysqlnaga_loader_cmd': $!";
+  
+  return;
+}
+
+sub _copy_table_ddl {
   my ($table) = @_;
   
   verbose("\tCreating table from source schema");
@@ -272,6 +315,16 @@ sub _populate_table {
   my $ddl = pop(@row_ary);
   _write_ddl($table, $ddl);
   $TARGET_DBH->do($ddl);
+  
+  return;
+}
+
+sub _mysqldump_populate_table {
+  my ($table) = @_;
+  
+  _copy_table_ddl($table);
+  
+  my $q_table = $SOURCE_DBH->quote_identifier($table);
   
   verbose("\tWriting table data out");
   my $filename = _file($table, 'txt');
@@ -377,6 +430,12 @@ Use the last modified date/created date to calculate if a table has changed
 The directory to dump text files to. If not specified the program will use
 the cwd. A directory will be created in this one by the same name of the
 database being transferred with all files being dumped into here.
+
+=item B<--use-naga>
+
+If switched on will force the use of mysqlnaga and mysqlnaga-loader. The
+files produced will use a slightly different format as what mysqldump would have
+produced since we cannot support this functionality 1:1
 
 =item B<--database>
 
