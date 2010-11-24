@@ -36,6 +36,8 @@ sub process_db {
   }
   
   my $TARGET_TABLES = _schema_information($TARGET_DBH);
+  
+  #This will change our connected to the equivalent target DB on each DBH 
   _switch_db($SOURCE_DBH);
   _switch_db($TARGET_DBH);
   
@@ -341,9 +343,24 @@ sub _mysqldump_populate_table {
 SELECT * from ${q_table} INTO OUTFILE '${filename}'
 FIELDS ESCAPED BY '\\\\'
 SQL
-  $SOURCE_DBH->do("LOCK TABLES ${q_table} READ");
-  $SOURCE_DBH->do($write_data_out_sql);
-  $SOURCE_DBH->do('UNLOCK TABLES');
+  my $max = 3;
+  
+  for(my $i=1; $i <= $max; $i++) {
+    $SOURCE_DBH->do("LOCK TABLES ${q_table} READ");
+    $SOURCE_DBH->do($write_data_out_sql);
+    $SOURCE_DBH->do('UNLOCK TABLES');
+    
+    if(! -f $filename) {
+      if($i == $max) {
+        print STDERR "PROBLEM: Cannot find the file ${filename}; exiting after trying ${max} time(s)\n";
+        exit 10;
+      }
+      print STDERR "PROBLEM: Cannot find the file ${filename}; re-dumping (on ${i} iteration out of ${max})\n";
+    }
+    else {
+      last;
+    }
+  }
   
   verbose("\tPopulating table data");
   my $write_data_in_sql = <<SQL;
