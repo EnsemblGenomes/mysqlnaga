@@ -370,9 +370,7 @@ SQL
   $TARGET_DBH->do("LOCK TABLES ${q_table} WRITE");
   $TARGET_DBH->do($write_data_in_sql);
   $TARGET_DBH->do("UNLOCK TABLES");
-  
-  unlink $filename;
-  
+    
   return;
 }
 
