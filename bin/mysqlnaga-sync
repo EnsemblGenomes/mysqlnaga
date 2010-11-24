@@ -343,7 +343,7 @@ sub _mysqldump_populate_table {
 SELECT * from ${q_table} INTO OUTFILE '${filename}'
 FIELDS ESCAPED BY '\\\\'
 SQL
-  my $max = 3;
+  my $max = 1;
   
   for(my $i=1; $i <= $max; $i++) {
     $SOURCE_DBH->do("LOCK TABLES ${q_table} READ");
