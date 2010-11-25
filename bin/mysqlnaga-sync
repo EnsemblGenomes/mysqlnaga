@@ -19,6 +19,7 @@ my $OPTIONS = _parse_options();
 
 my $DB      = $OPTIONS->{database};
 my $VERBOSE = $OPTIONS->{verbose};
+my $NO_DUMP = $OPTIONS->{'no-dump'};
 
 my $SOURCE_DBH    = _open_dbh('source');
 my $TARGET_DBH    = _open_dbh('target');
@@ -175,6 +176,7 @@ sub _parse_options {
     directory=s
     database=s
     host=s
+    no-dump
     password=s
     port=i
     targethost=s
@@ -327,20 +329,25 @@ sub _mysqlnaga_populate_table {
   my $cwd = cwd();
   chdir(_dir());
   
-  verbose("\tWriting table data out");
-  my @mysqlnaga_options;
-  push(@mysqlnaga_options, q{--host}, $OPTIONS->{host}) if $OPTIONS->{host};
-  push(@mysqlnaga_options, q{--port}, $OPTIONS->{port}) if $OPTIONS->{port};
-  push(@mysqlnaga_options, q{--user}, $OPTIONS->{user}) if $OPTIONS->{user};
-  push(@mysqlnaga_options, q{--pass}, $OPTIONS->{password}) if $OPTIONS->{password};
-  push(@mysqlnaga_options, q{--verbose}) if $OPTIONS->{verbose};
-  push(@mysqlnaga_options, q{--database}, $OPTIONS->{database});
-  push(@mysqlnaga_options, q{--directory}, cwd());
-  push(@mysqlnaga_options, q{--tables}, $table);
-  push(@mysqlnaga_options, q{--fields-optionally-enclosed-by}, q{'`'});
-  
-  my $mysqlnaga_cmd = join q{ }, 'mysqlnaga', @mysqlnaga_options;
-  system($mysqlnaga_cmd) and die "Could not complete the dump with the command '$mysqlnaga_cmd': $!";
+  if($NO_DUMP) {
+    verbose("\tNot writing data out as given --no-dump at the command line");
+  } 
+  else {
+    verbose("\tWriting table data out");
+    my @mysqlnaga_options;
+    push(@mysqlnaga_options, q{--host}, $OPTIONS->{host}) if $OPTIONS->{host};
+    push(@mysqlnaga_options, q{--port}, $OPTIONS->{port}) if $OPTIONS->{port};
+    push(@mysqlnaga_options, q{--user}, $OPTIONS->{user}) if $OPTIONS->{user};
+    push(@mysqlnaga_options, q{--pass}, $OPTIONS->{password}) if $OPTIONS->{password};
+    push(@mysqlnaga_options, q{--verbose}) if $OPTIONS->{verbose};
+    push(@mysqlnaga_options, q{--database}, $OPTIONS->{database});
+    push(@mysqlnaga_options, q{--directory}, cwd());
+    push(@mysqlnaga_options, q{--tables}, $table);
+    push(@mysqlnaga_options, q{--fields-optionally-enclosed-by}, q{'`'});
+    
+    my $mysqlnaga_cmd = join q{ }, 'mysqlnaga', @mysqlnaga_options;
+    system($mysqlnaga_cmd) and die "Could not complete the dump with the command '$mysqlnaga_cmd': $!";
+  }
   
   verbose("\tPopulating table data");
   my @mysqlnaga_loader_options;
@@ -370,8 +377,13 @@ sub _copy_table_ddl {
   my $sql = "SHOW CREATE TABLE ${q_table}";
   my @row_ary = $SOURCE_DBH->selectrow_array($sql);
   my $ddl = pop(@row_ary);
-  _write_ddl($table, $ddl);
-  $TARGET_DBH->do($ddl);
+  if($NO_DUMP) {
+    verbose("\tNo SQL written as --no-dump given at the command line");
+  }
+  else {
+    _write_ddl($table, $ddl);
+    $TARGET_DBH->do($ddl);
+  }
   
   return;
 }
@@ -382,17 +394,22 @@ sub _mysqldump_populate_table {
   _copy_table_ddl($table);
   
   my $q_table = $SOURCE_DBH->quote_identifier($table);
-  
-  verbose("\tWriting table data out");
   my $filename = _file($table, 'txt');
-  my $write_data_out_sql = <<SQL;
+  
+  if($NO_DUMP) {
+    verbose("\tNo table data written as --no-dump given at the command line");
+  }
+  else {
+    verbose("\tWriting table data out");
+    my $write_data_out_sql = <<SQL;
 SELECT * from ${q_table} INTO OUTFILE '${filename}'
 FIELDS ESCAPED BY '\\\\'
 SQL
   
-  $SOURCE_DBH->do("LOCK TABLES ${q_table} READ");
-  $SOURCE_DBH->do($write_data_out_sql);
-  $SOURCE_DBH->do('UNLOCK TABLES');
+    $SOURCE_DBH->do("LOCK TABLES ${q_table} READ");
+    $SOURCE_DBH->do($write_data_out_sql);
+    $SOURCE_DBH->do('UNLOCK TABLES');
+  }
 
   verbose("\tPopulating table data");
   my $write_data_in_sql = <<SQL;
@@ -502,6 +519,12 @@ database being transferred with all files being dumped into here.
 If switched on will force the use of mysqlnaga and mysqlnaga-loader. The
 files produced will use a slightly different format as what mysqldump would have
 produced since we cannot support this functionality 1:1
+
+=item B<--no-dump>
+
+This will assume that the directory we are using already has files in there
+from a previous run. This is useful when you have multiple targets for your
+syncs.
 
 =item B<--database>
 
