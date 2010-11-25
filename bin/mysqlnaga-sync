@@ -377,9 +377,9 @@ SQL
 sub _file_exists {
   my ($file, $tries, $increment) = @_;
   for(my $i = 0; $i< $tries; $i++) {
-    if(-f $file) {
-      return 1;
-    }
+    my $signal = open my $fh, '<', $file;
+    close $fh;
+    return 1 if $signal;
     sleep($increment);
   }
   return 0;
