@@ -57,6 +57,13 @@ sub process_db {
     _assert_state($table);
   }
   
+  if($OPTIONS->{'use-naga'}) {
+    verbose("\tRemoving LOADER-LOG.txt");
+    my $filename = File::Spec->catfile(_dir(), 'LOADER-LOG.txt');
+    unlink $filename;
+    verbose("\tLOADER-LOG.txt gone");
+  }
+  
   verbose("Finished with database '${DB}'");
   
   return;
