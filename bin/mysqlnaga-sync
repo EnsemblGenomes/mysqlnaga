@@ -382,8 +382,8 @@ sub _copy_table_ddl {
   }
   else {
     _write_ddl($table, $ddl);
-    $TARGET_DBH->do($ddl);
   }
+  $TARGET_DBH->do($ddl);
   
   return;
 }
