@@ -438,8 +438,13 @@ sub _file {
   my $dir = _dir();
   my $filename = File::Spec->catfile($dir, $table.'.'.$ext);
   if(-f $filename) {
-    verbose("\tFile $filename already exists. Removing");
-    unlink $filename;
+    if($NO_DUMP) {
+      verbose("\tFile $filename already exists but not removing as --no-dump is on");
+    }
+    else {
+      verbose("\tFile $filename already exists. Removing");
+      unlink $filename;
+    }
   }
   return $filename;
 }
