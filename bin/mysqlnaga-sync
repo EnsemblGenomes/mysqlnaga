@@ -350,7 +350,7 @@ SQL
     $SOURCE_DBH->do($write_data_out_sql);
     $SOURCE_DBH->do('UNLOCK TABLES');
     
-    if(! -f $filename) {
+    if(! _file_exists($filename, 3, 2)) {
       if($i == $max) {
         print STDERR "PROBLEM: Cannot find the file ${filename}; exiting after trying ${max} time(s)\n";
         exit 10;
@@ -372,6 +372,17 @@ SQL
   $TARGET_DBH->do("UNLOCK TABLES");
     
   return;
+}
+
+sub _file_exists {
+  my ($file, $tries, $increment) = @_;
+  for(my $i = 0; $i< $tries; $i++) {
+    if(-f $file) {
+      return 1;
+    }
+    sleep($increment);
+  }
+  return 0;
 }
 
 sub _dir {
