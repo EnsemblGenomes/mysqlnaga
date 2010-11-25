@@ -9,6 +9,7 @@ use Cwd;
 use DateTime;
 use DateTime::Format::MySQL;
 use DBI;
+use File::Find;
 use File::Path qw(make_path);
 use File::Spec;
 use Getopt::Long;
@@ -24,8 +25,10 @@ my $TARGET_DBH    = _open_dbh('target');
 
 my $SOURCE_TABLES = _schema_information($SOURCE_DBH);
 
+my $EXIT_CODE = 0;
+
 process_db();
-exit 0;
+exit $EXIT_CODE;
 
 sub process_db {
   verbose("Working on database '${DB}'");
@@ -43,6 +46,14 @@ sub process_db {
   
   foreach my $table ( sort keys %{$SOURCE_TABLES} ) {
     _process_table($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table});
+  }
+  
+  foreach my $table( sort keys %{$TARGET_TABLES}) {
+    _remove_table($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table});
+  }
+  
+  foreach my $table( sort keys %{$SOURCE_TABLES}) {
+    _assert_state($table);
   }
   
   verbose("Finished with database '${DB}'");
@@ -118,6 +129,41 @@ sub _process_table {
   }
 
   verbose("\tFinished table");
+  return;
+}
+
+sub _remove_table {
+  my ($table, $source_info, $target_info) = @_;
+  if(! defined $source_info) {
+    verbose("\tTable '${table}' exists on the target server but not on the local server");
+    _drop_table($TARGET_DBH, $table);
+    verbose("\tTable '${table}' has been dropped");
+    find({ wanted => sub {
+      my $name = $_;
+      foreach my $suffix (qw(sql txt)) {
+        if($name eq $table.q{.}.$suffix) {
+          verbose("\tFound a data file for $name and will remove this");
+          my $path = $File::Find::name;
+          unlink $path;
+        }
+      }
+      return;
+    }}, _dir());
+    return;
+  }
+  return;
+}
+
+#Assertion is based on a table count
+sub _assert_state {
+  my ($table) = @_;
+  my $sql = 'select count(*) from '.$SOURCE_DBH->quote_identifier($table);
+  my ($source_count) = $SOURCE_DBH->selectrow_array($sql);
+  my ($target_count) = $TARGET_DBH->selectrow_array($sql);
+  if($source_count != $target_count) {
+    print STDERR "FAIL: ${table} row count do not match in the source and target schema\n";
+    $EXIT_CODE = 1;
+  }
   return;
 }
 
@@ -406,7 +452,7 @@ mysqlnaga-sync
 =head1 DESCRIPTION
 
 Provides a functionality similar to the mysqlnaga and mysqlnaga-loader scripts
-except in this situation we do the transfer of data only if
+except in this situation we do the transfer of data only if it detects that:
 
 =over 8
 
@@ -423,6 +469,11 @@ except in this situation we do the transfer of data only if
 You can choose one of these strategies to detect when a transfer should occur
 however the recommened is last modified time as this requires the smallest 
 amount of work from the database.  
+
+The code will remove any dump files from a target directory if you are 
+building incremental flat file dumps (for backup or public release of
+a database) and after a load will ensure that the row counts of the tables
+match each other in the source and target database.
 
 =head1 OPTIONS
 
