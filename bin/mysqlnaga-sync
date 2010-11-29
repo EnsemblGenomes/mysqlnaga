@@ -351,6 +351,7 @@ sub _mysqlnaga_populate_table {
     push(@mysqlnaga_options, q{--directory}, cwd());
     push(@mysqlnaga_options, q{--tables}, $table);
     push(@mysqlnaga_options, q{--fields-optionally-enclosed-by}, q{'`'});
+    push(@mysqlnaga_options, q{--blocking-select});
     
     my $mysqlnaga_cmd = join q{ }, 'mysqlnaga', @mysqlnaga_options;
     system($mysqlnaga_cmd) and die "Could not complete the dump with the command '$mysqlnaga_cmd': $!";
