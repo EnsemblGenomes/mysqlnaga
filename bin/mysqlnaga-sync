@@ -89,10 +89,19 @@ sub _process_table {
     if($OPTIONS->{date}) {
       #Returns -1 if source was older than target, 0 if equal & 1 if younger
       #i.e. same situation which means we need to populate
-      my $cmp = DateTime->compare_ignore_floating(
-        $source_info->{date}, $target_info->{date});
-      $drop_table = ($cmp > 0) ? 1 : 0;
-      $populate_table = $drop_table;
+      if(! defined $source_info->{date} || ! defined $target_info->{date}) {
+        verbose("\tSource table date was undefined") if ! defined $source_info->{date};
+        verbose("\tTarget table date was undefined") if ! defined $target_info->{date};
+        verbose("\tConsider switching to --count or --checksum checks or flush the status of the table");
+        $drop_table = 1;
+        $populate_table = 1;
+      }
+      else {
+        my $cmp = DateTime->compare_ignore_floating(
+          $source_info->{date}, $target_info->{date});
+        $drop_table = ($cmp > 0) ? 1 : 0;
+        $populate_table = $drop_table;
+      }
     }
     #Populate if counts differ
     elsif($OPTIONS->{count}) {
@@ -276,11 +285,12 @@ SQL
   $sth->execute($OPTIONS->{database});
   while(my $row = $sth->fetchrow_arrayref()) {
     my ($table, $created, $modified, $count) = @{$row};
-    my $date = (defined $modified) ? $modified : $created; 
+    my $date = (defined $modified) ? $modified : $created;
     $schema_hash->{$table} = {
-      date => DateTime::Format::MySQL->parse_datetime($date),
       count => $count
     };
+    $schema_hash->{date} = 
+      DateTime::Format::MySQL->parse_datetime($date) if defined $date;
   }
   $sth->finish();
   return $schema_hash;
