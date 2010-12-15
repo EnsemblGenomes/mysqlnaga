@@ -185,8 +185,12 @@ sub _assert_state {
 }
 
 sub _perform_count {
-  my ($table, $dbh) = @_;
-  my $sql = 'select count(*) from '.$dbh->quote_identifier($table);
+  my ($table, $dbh, $schema) = @_;
+  my @name;
+  push(@name, $schema) if $schema;
+  push(@name, $table);
+  my $qualified_name = join(q{.}, map { $dbh->quote_identifier($_) } @name);
+  my $sql = 'select count(*) from '.$qualified_name;
   my ($count) = $dbh->selectrow_array($sql);
   return $count; 
 }
@@ -300,7 +304,7 @@ SQL
       DateTime::Format::MySQL->parse_datetime($date) if defined $date;
      
     if($engine eq 'InnoDB') {
-      $schema_hash->{count} = _perform_count($table, $dbh);
+      $schema_hash->{count} = _perform_count($table, $dbh, $OPTIONS->{database});
     }
   }
   $sth->finish();
