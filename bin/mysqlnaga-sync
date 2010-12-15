@@ -175,13 +175,20 @@ sub _remove_table {
 sub _assert_state {
   my ($table) = @_;
   my $sql = 'select count(*) from '.$SOURCE_DBH->quote_identifier($table);
-  my ($source_count) = $SOURCE_DBH->selectrow_array($sql);
-  my ($target_count) = $TARGET_DBH->selectrow_array($sql);
+  my $source_count = _perform_count($table, $SOURCE_DBH);
+  my $target_count = _perform_count($table, $TARGET_DBH);
   if($source_count != $target_count) {
     print STDERR "FAIL: ${table} row count do not match in the source and target schema\n";
     $EXIT_CODE = 1;
   }
   return;
+}
+
+sub _perform_count {
+  my ($table, $dbh) = @_;
+  my $sql = 'select count(*) from '.$dbh->quote_identifier($table);
+  my ($count) = $dbh->selectrow_array($sql);
+  return $count; 
 }
 
 sub _parse_options {
@@ -277,20 +284,24 @@ sub _schema_information {
   my ($dbh) = @_;
   my $schema_hash = {};
   my $sql = <<'SQL';
-select TABLE_NAME, CREATE_TIME, UPDATE_TIME, TABLE_ROWS 
+select TABLE_NAME, CREATE_TIME, UPDATE_TIME, TABLE_ROWS, ENGINE
 from information_schema.TABLES 
 where TABLE_SCHEMA =?
 SQL
   my $sth = $dbh->prepare($sql);
   $sth->execute($OPTIONS->{database});
   while(my $row = $sth->fetchrow_arrayref()) {
-    my ($table, $created, $modified, $count) = @{$row};
+    my ($table, $created, $modified, $count, $engine) = @{$row};
     my $date = (defined $modified) ? $modified : $created;
     $schema_hash->{$table} = {
       count => $count
     };
     $schema_hash->{date} = 
       DateTime::Format::MySQL->parse_datetime($date) if defined $date;
+     
+    if($engine eq 'InnoDB') {
+      $schema_hash->{count} = _perform_count($table, $dbh);
+    }
   }
   $sth->finish();
   return $schema_hash;
