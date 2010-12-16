@@ -300,11 +300,11 @@ SQL
     $schema_hash->{$table} = {
       count => $count
     };
-    $schema_hash->{date} = 
+    $schema_hash->{$table}->{date} = 
       DateTime::Format::MySQL->parse_datetime($date) if defined $date;
      
     if($engine eq 'InnoDB') {
-      $schema_hash->{count} = _perform_count($table, $dbh, $OPTIONS->{database});
+      $schema_hash->{$table}->{count} = _perform_count($table, $dbh, $OPTIONS->{database});
     }
   }
   $sth->finish();
