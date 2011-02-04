@@ -287,13 +287,15 @@ sub _open_dbh {
 sub _schema_information {
   my ($dbh) = @_;
   my $schema_hash = {};
+  #TODO Make sure we can support views
   my $sql = <<'SQL';
-select TABLE_NAME, CREATE_TIME, UPDATE_TIME, TABLE_ROWS, ENGINE
+select TABLE_NAME, CREATE_TIME, UPDATE_TIME, TABLE_ROWS, ENGINE, TABLE_TYPE
 from information_schema.TABLES 
 where TABLE_SCHEMA =?
+and TABLE_TYPE =?
 SQL
   my $sth = $dbh->prepare($sql);
-  $sth->execute($OPTIONS->{database});
+  $sth->execute($OPTIONS->{database}, 'BASE TABLE');
   while(my $row = $sth->fetchrow_arrayref()) {
     my ($table, $created, $modified, $count, $engine) = @{$row};
     my $date = (defined $modified) ? $modified : $created;
