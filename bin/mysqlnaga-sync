@@ -46,14 +46,25 @@ sub process_db {
   _switch_db($TARGET_DBH);
   
   foreach my $table ( sort keys %{$SOURCE_TABLES} ) {
-    _process_table($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table});
+    if($table->{view}) {
+      _process_view($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table})
+    }
+    else {
+      _process_table($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table});
+    }
   }
   
   foreach my $table( sort keys %{$TARGET_TABLES}) {
-    _remove_table($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table});
+    if($table->{view}) {
+      _remove_view($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table})
+    }
+    else {
+      _remove_table($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table});
+    }
   }
   
   foreach my $table( sort keys %{$SOURCE_TABLES}) {
+    next if $table->{view};
     _assert_state($table);
   }
   
@@ -171,6 +182,42 @@ sub _remove_table {
   return;
 }
 
+sub _process_view {
+  my ($view, $source_info, $target_info) = @_;
+  if(defined $target_info) {
+    verbose("\tView '$view' exists on the target server. Re-populating");
+    _drop_view($TARGET_DBH, $view);
+    verbose("\tView '$view' has been dropped");
+  }
+  verbose("\tView '$view' will be copied across");
+  _copy_view_ddl($view);
+  verbose("\tView has been copied");
+  return;
+}
+
+sub _remove_view {
+  my ($view, $source_info, $target_info) = @_;
+  if(! defined $source_info) {
+    verbose("\tView '$view' does not exist on the source server. Dropping from target");
+    _drop_view($TARGET_DBH, $view);
+    #Removing from filesystem
+    find({ wanted => sub {
+      my $name = $_;
+      foreach my $suffix (qw(sql txt)) {
+        if($name eq $view.q{.}.$suffix) {
+          verbose("\tFound a data file for $name and will remove this");
+          my $path = $File::Find::name;
+          unlink $path;
+        }
+      }
+      return;
+    }}, _dir());
+    verbose("\tView '$view' has been dropped");
+  }
+  return;
+}
+
+
 #Assertion is based on a table count
 sub _assert_state {
   my ($table) = @_;
@@ -287,25 +334,24 @@ sub _open_dbh {
 sub _schema_information {
   my ($dbh) = @_;
   my $schema_hash = {};
-  #TODO Make sure we can support views
   my $sql = <<'SQL';
 select TABLE_NAME, CREATE_TIME, UPDATE_TIME, TABLE_ROWS, ENGINE, TABLE_TYPE
 from information_schema.TABLES 
 where TABLE_SCHEMA =?
-and TABLE_TYPE =?
 SQL
   my $sth = $dbh->prepare($sql);
-  $sth->execute($OPTIONS->{database}, 'BASE TABLE');
+  $sth->execute($OPTIONS->{database});
   while(my $row = $sth->fetchrow_arrayref()) {
-    my ($table, $created, $modified, $count, $engine) = @{$row};
+    my ($table, $created, $modified, $count, $engine, $type) = @{$row};
     my $date = (defined $modified) ? $modified : $created;
     $schema_hash->{$table} = {
-      count => $count
+      count => $count,
+      view => (($type eq 'VIEW') ? 1 : 0 )
     };
     $schema_hash->{$table}->{date} = 
       DateTime::Format::MySQL->parse_datetime($date) if defined $date;
      
-    if($engine eq 'InnoDB') {
+    if(!$schema_hash->{view} && $engine eq 'InnoDB') {
       $schema_hash->{$table}->{count} = _perform_count($table, $dbh, $OPTIONS->{database});
     }
   }
@@ -351,6 +397,14 @@ sub _drop_table {
   my ($dbh, $table) = @_;
   my $q_table = $dbh->quote_identifier($table);
   my $sql = "DROP TABLE ${q_table}";
+  $dbh->do($sql);
+  return;
+}
+
+sub _drop_view {
+  my ($dbh, $view) = @_;
+  my $q_view = $dbh->quote_identifier($view);
+  my $sql = "DROP VIEW ${q_$view}";
   $dbh->do($sql);
   return;
 }
@@ -404,14 +458,23 @@ sub _mysqlnaga_populate_table {
   return;
 }
 
+sub _copy_view_ddl {
+  my ($view) = @_;
+  _copy_table_ddl($view, 1);
+  return;
+}
+
 sub _copy_table_ddl {
-  my ($table) = @_;
+  my ($table, $work_as_view) = @_;
   
   verbose("\tCreating table from source schema");
   my $q_table = $SOURCE_DBH->quote_identifier($table);
   my $sql = "SHOW CREATE TABLE ${q_table}";
   my @row_ary = $SOURCE_DBH->selectrow_array($sql);
   my $ddl = pop(@row_ary);
+  if($work_as_view) {
+    $ddl = _alter_view($ddl);
+  }
   if($NO_DUMP) {
     verbose("\tNo SQL written as --no-dump given at the command line");
   }
@@ -421,6 +484,15 @@ sub _copy_table_ddl {
   $TARGET_DBH->do($ddl);
   
   return;
+}
+
+# Used to change the security to invoker & to remove the definer code
+sub _alter_view {
+  my ($ddl) = @_;
+  verbose("\tRemoving DEFINER and setting SECURITY for view to INVOKER for portability");
+  $ddl = s/ DEFINER=[a-zA-Z0-9`@%]+ / /;
+  $ddl = s/SQL SECURITY DEFINER/SQL SECURITY INVOKER/;
+  return $ddl;
 }
 
 sub _mysqldump_populate_table {
