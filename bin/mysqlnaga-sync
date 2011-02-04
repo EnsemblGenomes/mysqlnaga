@@ -17,9 +17,10 @@ use Pod::Usage;
 
 my $OPTIONS = _parse_options();
 
-my $DB      = $OPTIONS->{database};
-my $VERBOSE = $OPTIONS->{verbose};
-my $NO_DUMP = $OPTIONS->{'no-dump'};
+my $DB        = $OPTIONS->{database};
+my $VERBOSE   = $OPTIONS->{verbose};
+my $NO_DUMP   = $OPTIONS->{'no-dump'};
+my $NO_VIEWS  = $OPTIONS->{'no-views'};
 
 my $SOURCE_DBH    = _open_dbh('source');
 my $TARGET_DBH    = _open_dbh('target');
@@ -47,7 +48,9 @@ sub process_db {
   
   foreach my $table ( sort keys %{$SOURCE_TABLES} ) {
     if($table->{view}) {
-      _process_view($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table})
+      if(! $NO_VIEWS) {
+        _process_view($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table})
+      }
     }
     else {
       _process_table($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table});
@@ -56,7 +59,9 @@ sub process_db {
   
   foreach my $table( sort keys %{$TARGET_TABLES}) {
     if($table->{view}) {
-      _remove_view($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table})
+      if(! $NO_VIEWS) {
+        _remove_view($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table})
+      }
     }
     else {
       _remove_table($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table});
@@ -162,7 +167,7 @@ sub _process_table {
 
 sub _remove_table {
   my ($table, $source_info, $target_info) = @_;
-  if(! defined $source_info) {
+  if(! defined $source_info && $target_info) {
     verbose("\tTable '${table}' exists on the target server but not on the local server");
     _drop_table($TARGET_DBH, $table);
     verbose("\tTable '${table}' has been dropped");
@@ -197,7 +202,7 @@ sub _process_view {
 
 sub _remove_view {
   my ($view, $source_info, $target_info) = @_;
-  if(! defined $source_info) {
+  if(! defined $source_info && defined $target_info) {
     verbose("\tView '$view' does not exist on the source server. Dropping from target");
     _drop_view($TARGET_DBH, $view);
     #Removing from filesystem
@@ -251,6 +256,7 @@ sub _parse_options {
     database=s
     host=s
     no-dump
+    no-views
     password=s
     port=i
     targethost=s
@@ -604,6 +610,13 @@ building incremental flat file dumps (for backup or public release of
 a database) and after a load will ensure that the row counts of the tables
 match each other in the source and target database.
 
+Views are also supported but are only transported using the security
+B<INVOKER> to aid portability. The code cannot assume the target server
+will have the same user settings as the current server and populations
+can be performed by higher level users & could pose a security issue. You
+can specify the B<-no_views> option to skip their transfer and you will
+be responsible for transferring them.
+
 =head1 OPTIONS
 
 =over 8
@@ -637,6 +650,12 @@ produced since we cannot support this functionality 1:1
 This will assume that the directory we are using already has files in there
 from a previous run. This is useful when you have multiple targets for your
 syncs.
+
+=item B<--no-views>
+
+This will skip the transfer of views from the source to target as well
+as removing those views which no longer appear in the source but do in
+the target
 
 =item B<--database>
 
