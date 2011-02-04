@@ -47,7 +47,7 @@ sub process_db {
   _switch_db($TARGET_DBH);
   
   foreach my $table ( sort keys %{$SOURCE_TABLES} ) {
-    if($table->{view}) {
+    if($SOURCE_TABLES->{$table}->{view}) {
       if(! $NO_VIEWS) {
         _process_view($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table})
       }
@@ -58,7 +58,7 @@ sub process_db {
   }
   
   foreach my $table( sort keys %{$TARGET_TABLES}) {
-    if($table->{view}) {
+    if($TARGET_TABLES->{$table}->{view}) {
       if(! $NO_VIEWS) {
         _remove_view($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table})
       }
@@ -69,7 +69,7 @@ sub process_db {
   }
   
   foreach my $table( sort keys %{$SOURCE_TABLES}) {
-    next if $table->{view};
+    next if $SOURCE_TABLES->{view};
     _assert_state($table);
   }
   
