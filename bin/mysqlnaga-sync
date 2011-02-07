@@ -357,7 +357,7 @@ SQL
     $schema_hash->{$table}->{date} = 
       DateTime::Format::MySQL->parse_datetime($date) if defined $date;
      
-    if(!$schema_hash->{view} && $engine eq 'InnoDB') {
+    if(!$schema_hash->{view} && defined $engine && $engine eq 'InnoDB') {
       $schema_hash->{$table}->{count} = _perform_count($table, $dbh, $OPTIONS->{database});
     }
   }
@@ -477,7 +477,7 @@ sub _copy_table_ddl {
   my $q_table = $SOURCE_DBH->quote_identifier($table);
   my $sql = "SHOW CREATE TABLE ${q_table}";
   my @row_ary = $SOURCE_DBH->selectrow_array($sql);
-  my $ddl = pop(@row_ary);
+  my ($table_name, $ddl) = @row_ary;
   if($work_as_view) {
     $ddl = _alter_view($ddl);
   }
