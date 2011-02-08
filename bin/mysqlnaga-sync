@@ -69,7 +69,8 @@ sub process_db {
   }
   
   foreach my $table( sort keys %{$SOURCE_TABLES}) {
-    next if $SOURCE_TABLES->{view};
+    next if $SOURCE_TABLES->{$table}->{view};
+    next unless $SOURCE_TABLES->{$table}->{synced};
     _assert_state($table);
   }
   
@@ -156,6 +157,7 @@ sub _process_table {
       verbose("\tUsing mysqldump");
       _mysqldump_populate_table($table);
     }
+    $source_info->{synced};
   }
   else {
     verbose("\tTable is okay according to the used test");
