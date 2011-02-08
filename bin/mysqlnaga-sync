@@ -157,7 +157,7 @@ sub _process_table {
       verbose("\tUsing mysqldump");
       _mysqldump_populate_table($table);
     }
-    $source_info->{synced};
+    $source_info->{synced} = 1;
   }
   else {
     verbose("\tTable is okay according to the used test");
