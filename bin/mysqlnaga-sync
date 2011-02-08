@@ -498,8 +498,8 @@ sub _copy_table_ddl {
 sub _alter_view {
   my ($ddl) = @_;
   verbose("\tRemoving DEFINER and setting SECURITY for view to INVOKER for portability");
-  $ddl = s/ DEFINER=[a-zA-Z0-9`@%]+ / /;
-  $ddl = s/SQL SECURITY DEFINER/SQL SECURITY INVOKER/;
+  $ddl =~ s/ DEFINER=[a-zA-Z0-9`@%]+ / /;
+  $ddl =~ s/SQL SECURITY DEFINER/SQL SECURITY INVOKER/;
   return $ddl;
 }
 
