@@ -412,7 +412,7 @@ sub _drop_table {
 sub _drop_view {
   my ($dbh, $view) = @_;
   my $q_view = $dbh->quote_identifier($view);
-  my $sql = "DROP VIEW ${q_$view}";
+  my $sql = "DROP VIEW ${q_view}";
   $dbh->do($sql);
   return;
 }
