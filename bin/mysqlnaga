@@ -331,7 +331,7 @@ sub _list_tables {
   my ($table) = @_;
   $table ||= '%';
   my @tables;
-  my $sth = $DBH->table_info( undef, $OPTIONS->{database}, $table );
+  my $sth = $DBH->table_info( undef, $OPTIONS->{database}, $table, 'TABLE' );
   while ( my $row = $sth->fetchrow_arrayref() ) {
     push( @tables, $row->[2] );
   }
