@@ -256,6 +256,7 @@ sub _parse_options {
     date
     directory=s
     database=s
+    disable-foreign-keys
     host=s
     no-dump
     no-views
@@ -420,7 +421,11 @@ sub _drop_view {
 sub _mysqlnaga_populate_table {
   my ($table) = @_;
   
+  _toggle_foreign_key(0);
+  
   _copy_table_ddl($table);
+  
+  _toggle_foreign_key(1);
   
   my $cwd = cwd();
   chdir(_dir());
@@ -457,6 +462,7 @@ sub _mysqlnaga_populate_table {
   push(@mysqlnaga_loader_options, q{--directory}, cwd());
   push(@mysqlnaga_loader_options, q{--tables}, $table);
   push(@mysqlnaga_loader_options, q{--fields-optionally-enclosed-by}, q{'`'});
+  push(@mysqlnaga_loader_options, q{--disable-foreign-keys}) if $OPTIONS->{disable-foreign-keys};
   
   my $mysqlnaga_loader_cmd = join q{ }, 'mysqlnaga-loader', @mysqlnaga_loader_options;
   system($mysqlnaga_loader_cmd) and die "Could not complete the load with the command '$mysqlnaga_loader_cmd': $!";
@@ -506,6 +512,8 @@ sub _alter_view {
 sub _mysqldump_populate_table {
   my ($table) = @_;
   
+  _toggle_foreign_key(0);
+  
   _copy_table_ddl($table);
   
   my $q_table = $SOURCE_DBH->quote_identifier($table);
@@ -534,7 +542,9 @@ SQL
   $TARGET_DBH->do("LOCK TABLES ${q_table} WRITE");
   $TARGET_DBH->do($write_data_in_sql);
   $TARGET_DBH->do("UNLOCK TABLES");
-    
+  
+  _toggle_foreign_key(1);
+  
   return;
 }
 
@@ -571,6 +581,17 @@ sub _write_ddl {
   print $fh $ddl;
   print $fh "\n";
   close $fh;
+  return;
+}
+
+sub _toggle_foreign_key {
+  my ($on) = @_;
+  if($OPTIONS->{'disable-foreign-keys'}) {
+    my $cmd = ($on) ? 1 : 0;
+    verbose("\t\tToggling indexes to '$cmd'");
+    my $ddl = qq{set foreign_key_checks=$cmd};
+    $TARGET_DBH->do($ddl);
+  }
   return;
 }
 
@@ -658,6 +679,11 @@ syncs.
 This will skip the transfer of views from the source to target as well
 as removing those views which no longer appear in the source but do in
 the target
+
+=item B<--disable-foreign-keys>
+
+Turns off the flag for foreign key checks in the DB connection. Useful 
+if you are transferring an InnoDB schema
 
 =item B<--database>
 
