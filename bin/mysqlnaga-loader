@@ -112,6 +112,7 @@ sub _parse_options {
 	my @options = qw(
 		directory=s
 		database=s 
+    disable-foreign-keys
 		fields-escaped-by=s 
 		fields-optionally-enclosed-by=s 
 		fields-terminated-by=s 
@@ -290,6 +291,7 @@ sub _load {
 	);
 	
 	_toggle_indexes($table, 0);
+  _toggle_foreign_key(0);
 	
 	my $ddl = sprintf(q{LOAD DATA LOCAL INFILE '%s' %s INTO TABLE %s %s %s %s %s}, @args);
 	verbose("\t\tAbout to run $ddl");
@@ -300,6 +302,7 @@ sub _load {
 	}
 	
 	_toggle_indexes($table, 1);
+   _toggle_foreign_key(1);
 	
 	return;
 }
@@ -316,6 +319,17 @@ sub _toggle_indexes {
 		verbose("\t\tNot toggling indexes as '--turn-off-indexes' is off");
 	}
 	return;
+}
+
+sub _toggle_foreign_key {
+  my ($on) = @_;
+  if($OPTIONS->{'disable-foreign-keys'}) {
+    my $cmd = ($on) ? 1 : 0;
+    verbose("\t\tToggling indexes to '$cmd'");
+    my $ddl = qq{set foreign_key_checks=$cmd};
+    $DBH->do($ddl);
+  }
+  return;
 }
 
 sub _process_records {
@@ -423,6 +437,10 @@ If specified will force records to be replaced with those from the input file on
 =item B<--ignore>
 
 If specified will ignore clashes arising from input files
+
+=item B<--disable-foreign-keys>
+
+Turns off the flag for foreign key checks in the DBI connection. Useful if you are transferring an InnoDB schema
 
 =item B<--nuke>
 
