@@ -588,7 +588,7 @@ sub _toggle_foreign_key {
   my ($on) = @_;
   if($OPTIONS->{'disable-foreign-keys'}) {
     my $cmd = ($on) ? 1 : 0;
-    verbose("\t\tToggling indexes to '$cmd'");
+    verbose("\t\tToggling foreign key checks to '$cmd'");
     my $ddl = qq{set foreign_key_checks=$cmd};
     $TARGET_DBH->do($ddl);
   }
