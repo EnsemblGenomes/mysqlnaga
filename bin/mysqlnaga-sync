@@ -46,14 +46,17 @@ sub process_db {
   _switch_db($SOURCE_DBH);
   _switch_db($TARGET_DBH);
   
+  #Loop through tables first
   foreach my $table ( sort keys %{$SOURCE_TABLES} ) {
-    if($SOURCE_TABLES->{$table}->{view}) {
-      if(! $NO_VIEWS) {
-        _process_view($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table})
-      }
-    }
-    else {
-      _process_table($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table});
+    next if $SOURCE_TABLES->{$table}->{view};
+    _process_table($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table});
+  }
+  
+  #Loop through the views
+  foreach my $table ( sort keys %{$SOURCE_TABLES} ) {
+    next if ! $SOURCE_TABLES->{$table}->{view};
+    if(! $NO_VIEWS) {
+      _process_view($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table})
     }
   }
   
