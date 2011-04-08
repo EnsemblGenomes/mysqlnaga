@@ -56,14 +56,14 @@ sub process_db {
   foreach my $table ( sort keys %{$SOURCE_TABLES} ) {
     next if ! $SOURCE_TABLES->{$table}->{view};
     if(! $NO_VIEWS) {
-      _process_view($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table})
+      _process_view($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table});
     }
   }
   
   foreach my $table( sort keys %{$TARGET_TABLES}) {
     if($TARGET_TABLES->{$table}->{view}) {
       if(! $NO_VIEWS) {
-        _remove_view($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table})
+        _remove_view($table, $SOURCE_TABLES->{$table}, $TARGET_TABLES->{$table});
       }
     }
     else {
