@@ -11,7 +11,7 @@ use File::Find;
 use File::Spec;
 use File::stat;
 use IPC::Open3;
-use IO::Select qw(select);
+use IO::Select;
 use Getopt::Long;
 use Pod::Usage;
 use Symbol qw(gensym);
