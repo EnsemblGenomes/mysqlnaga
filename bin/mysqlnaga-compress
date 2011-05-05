@@ -12,7 +12,6 @@ use File::Spec;
 use File::stat;
 use File::Temp qw(tempfile);
 use Getopt::Long;
-use IPC::Run qw(run timeout);
 use Pod::Usage;
 use User::pwent;
 
