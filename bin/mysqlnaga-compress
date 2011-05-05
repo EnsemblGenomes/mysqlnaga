@@ -200,7 +200,7 @@ sub _run_mysql {
   die "open3: $@\n" if $@;
   
   print $in_fh $query;
-  close($in_fh) or throw "Could not close the STDIN to ${cmd}: $! \n";
+  close($in_fh) or die "Could not close the STDIN to ${cmd}: $! \n";
   
   my $out = '';
   my $err = '';
