@@ -6,12 +6,12 @@ use warnings;
 our $VERSION = '1.0';
 
 use Carp;
-use DBI;
 use File::Basename;
 use File::Find;
 use File::Spec;
 use File::stat;
 use Getopt::Long;
+use IPC::Run qw(run timeout);
 use Pod::Usage;
 use User::pwent;
 
@@ -48,9 +48,8 @@ sub _process_table {
   my ($table) = @_;
 
   verbose("\tWorking on table '${table}'");
-  my $dbh = _open_dbh();
   
-  my $q_table = $dbh->quote_identifier($table);
+  my $q_table = qq{`${table}`};
   my $absolute_table = File::Spec->rel2abs(File::Spec->catfile($DIR, $table));
   my $absolute_table_index = $absolute_table.'.MYI';
 
@@ -65,24 +64,14 @@ sub _process_table {
   }
   
   if(! $OPTIONS->{decompress} && $format eq 'Compressed') {
-    $dbh->disconnect();
     verbose("\tNot continuing as the table is already compressed");
     return;
   }
   if($OPTIONS->{decompress} && $format ne 'Compressed') {
-    $dbh->disconnect();
     verbose("\tNot continuing as the table is already decompressed");
     return;
   }
-  
-  my $lock_mode = ($OPTIONS->{decompress}) ? 'read' : 'write';
-  
-  verbose("\tLocking for $lock_mode");
-  $dbh->do(sprintf('lock tables %s %s', $q_table, $lock_mode));
 
-  verbose("\tFlushing table");
-  $dbh->do(sprintf('flush table %s', $q_table));
-  
   if($OPTIONS->{decompress}) {
     verbose("\tDecompressing");
     _system("myisamchk -u $absolute_table_index", 1);
@@ -118,29 +107,22 @@ sub _process_table {
   else {
     verbose("\tSkipping permission setting as we did not specify a group");
   }
-  
-  verbose("\tRemoving $lock_mode lock");
-  $dbh->do('unlock tables');
-  
-  verbose("\tFlushing table");
-  $dbh->do('flush tables');
-  
-  $dbh->disconnect();
 
   verbose("\tFinished table");
   return;
 }
 
 sub _table_status {
-  my $dbh = _open_dbh('information_schema');
-  my $sth = $dbh->prepare('select TABLE_NAME, ENGINE, ROW_FORMAT from information_schema.TABLES where TABLE_SCHEMA =?');
-  $sth->execute($DB);
   my %results;
-  while( my $row = $sth->fetchrow_arrayref()) {
+  my $sql = <<SQL;
+select TABLE_NAME, ENGINE, ROW_FORMAT 
+from information_schema.TABLES 
+where TABLE_SCHEMA = '${DB}';
+SQL
+  my $output = _run_mysql('information_schema', $sql);
+  foreach my $row (@{$output}) {
     $results{$row->[0]} = [ $row->[1], $row->[2] ];
   }
-  $sth->finish();
-  $dbh->disconnect();
   return %results;  
 }
 
@@ -190,18 +172,32 @@ sub _optional_set {
   return;
 }
 
-sub _open_dbh {
-  my ($incoming_db) = @_;
-  my ( $hostname, $port, $user, $password, $db) = (
-    ( $OPTIONS->{host} )            ? ";host=$OPTIONS->{host}" : '',
-    ( $OPTIONS->{port} )            ? ";port=$OPTIONS->{port}" : '',
-    ( $OPTIONS->{user} )            ? $OPTIONS->{user}         : undef,
-    ( $OPTIONS->{password} )        ? $OPTIONS->{password}     : undef,
-    ( $incoming_db )                ? $incoming_db             : $DB
+sub _run_mysql {
+  my ($incoming_db, $query) = @_;
+  my @args = (
+    '--skip-column-names',
+    '--batch',
+    ( $OPTIONS->{host} )            ? "--host=$OPTIONS->{host}"         : q{},
+    ( $OPTIONS->{port} )            ? "--port=$OPTIONS->{port}"         : q{},
+    ( $OPTIONS->{user} )            ? "--user=$OPTIONS->{user}"         : q{},
+    ( $OPTIONS->{password} )        ? "--password=$OPTIONS->{password}" : q{},
+    ( $incoming_db )                ? $incoming_db                      : $DB,
   );
-  my $dsn = "DBI:mysql:database=${db}${hostname}${port}";
-  my $dbh = DBI->connect( $dsn, $user, $password, { RaiseError => 1 } );
-  return $dbh;
+  my $cmd = join(q{ }, 'mysql', @args);
+  
+  my ($out, $err);
+  run \$query, \$out, \$err, timeout( 10 ) or die "mysql issue: $?";
+  print STDERR $err if defined $err && $err && $VERBOSE;  
+  my @lines = split(/\n/, $out);
+  my @results;
+  if(defined $out && $out) {
+    foreach my $l (@lines) {
+      my @split = split(/\s+/, $l);
+      push(@results, \@split);
+    }
+  }
+  
+  return \@results;
 }
 
 sub _run_chk {
