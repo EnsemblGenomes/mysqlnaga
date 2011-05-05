@@ -10,6 +10,7 @@ use File::Basename;
 use File::Find;
 use File::Spec;
 use File::stat;
+use File::Temp qw(tempfile);
 use Getopt::Long;
 use IPC::Run qw(run timeout);
 use Pod::Usage;
@@ -183,11 +184,17 @@ sub _run_mysql {
     ( $OPTIONS->{password} )        ? "--password=$OPTIONS->{password}" : q{},
     ( $incoming_db )                ? $incoming_db                      : $DB,
   );
-  my $cmd = join(q{ }, 'mysql', @args);
   
-  my ($out, $err);
-  run \$query, \$out, \$err, timeout( 10 ) or die "mysql issue: $?";
-  print STDERR $err if defined $err && $err && $VERBOSE;  
+  #Write the query to a tmp file & then run the query
+  my ($stdin_fh, $stdin_filename) = tempfile();
+  print $stdin_fh $query, "\n";
+  close($stdin_fh);
+  my @pre_cat = ('cat', $stdin_filename, '|');
+  push(@args, '>2 /dev/null');
+  
+  my $cmd = join(q{ }, @pre_cat, 'mysql', @args);
+  my $out = qx/$cmd/;
+  
   my @lines = split(/\n/, $out);
   my @results;
   if(defined $out && $out) {
