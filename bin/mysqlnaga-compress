@@ -192,8 +192,6 @@ sub _run_mysql {
   $err_fh = gensym(); #Need to do otherwise open3 clobbers STDOUT & STDERR
   my $pid;
   
-  print STDERR 'Running command: '.$cmd, "\n" if $VERBOSE;
-  
   eval{
     $pid = open3($in_fh, $out_fh, $err_fh, $cmd);
   };
