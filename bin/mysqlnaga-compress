@@ -10,9 +10,11 @@ use File::Basename;
 use File::Find;
 use File::Spec;
 use File::stat;
-use File::Temp qw(tempfile);
+use IPC::Open3;
+use IO::Select qw(select);
 use Getopt::Long;
 use Pod::Usage;
+use Symbol qw(gensym);
 use User::pwent;
 
 my $OPTIONS = _parse_options();
@@ -174,6 +176,7 @@ sub _optional_set {
 
 sub _run_mysql {
   my ($incoming_db, $query) = @_;
+  
   my @args = (
     '--skip-column-names',
     '--batch',
@@ -183,16 +186,63 @@ sub _run_mysql {
     ( $OPTIONS->{password} )        ? "--password=$OPTIONS->{password}" : q{},
     ( $incoming_db )                ? $incoming_db                      : $DB,
   );
+  my $cmd = join(q{ }, 'mysql', @args);  
   
-  #Write the query to a tmp file & then run the query
-  my ($stdin_fh, $stdin_filename) = tempfile();
-  print $stdin_fh $query, "\n";
-  close($stdin_fh);
-  my @pre_cat = ('cat', $stdin_filename, '|');
-  push(@args, '>2 /dev/null');
+  my ($in_fh, $out_fh, $err_fh);
+  $err_fh = gensym(); #Need to do otherwise open3 clobbers STDOUT & STDERR
+  my $pid;
   
-  my $cmd = join(q{ }, @pre_cat, 'mysql', @args);
-  my $out = qx/$cmd/;
+  print STDERR 'Running command: '.$cmd, "\n" if $VERBOSE;
+  
+  eval{
+    $pid = open3($in_fh, $out_fh, $err_fh, $cmd);
+  };
+  die "open3: $@\n" if $@;
+  
+  print $in_fh $query;
+  close($in_fh) or throw "Could not close the STDIN to ${cmd}: $! \n";
+  
+  my $out = '';
+  my $err = '';
+  
+  my $sel = IO::Select->new();
+  $sel->add($out_fh, $err_fh);
+  while(my @ready = $sel->can_read) {
+    foreach my $fh (@ready) {
+      my $line;
+      my $len = sysread($fh, $line, 4096); #Read 4KB at a time
+      #Error occured
+      if(not defined $len){
+        die("Error from child: $!\n");
+      }
+      elsif ($len == 0) {
+        #End of info from file handle so we finish & remove it
+        $sel->remove($fh);
+        next;
+      }
+      #Got data to read
+      else {
+        if($fh == $out_fh) {
+          $out .= $line;
+        }
+        elsif($fh == $err_fh) {
+          $err .= $line;
+          print STDERR $err if $VERBOSE;
+        }
+        else {
+          die("Odd error as we have somehow got a FH we do not know about\n")
+        }
+      }
+    }
+  }
+  
+  waitpid $pid, 0;
+  my $child_exit_status = $? >> 8;
+  
+  #Everything was good
+  if($child_exit_status != 0) {
+    die("Error detected when running ${cmd}. Exit status was ${child_exit_status}. STDERR was: ${err}\n");
+  }
   
   my @lines = split(/\n/, $out);
   my @results;
