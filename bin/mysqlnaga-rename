@@ -20,6 +20,7 @@ my $DROP    = $OPTIONS{drop};
 
 my $DBH       = _open_dbh();
 my %DB_TABLES = _db_tables($DB);
+my %VIEWS     = _views(); 
 
 process_db();
 
@@ -27,7 +28,15 @@ sub process_db {
 	verbose("Migrating database '${DB}' to '${TARGET}'");
 	_assert_target();
 	foreach my $table (sort keys %DB_TABLES) {
+	  if($VIEWS{$table}) {
+	    next;
+	  }
 		_process_table($table);	
+	}
+	foreach my $view (sort keys %DB_TABLES) {
+	  if($VIEWS{$view}) {
+	    _process_view($view);
+	  }
 	}
 	_drop_source();
 	verbose("Finished with database '${DB}'");
@@ -47,6 +56,20 @@ sub _process_table {
 	my $ddl = _generate_ddl($table);
 	$DBH->do($ddl);		
 	verbose("\tFinished table");
+	return;
+}
+
+sub _process_view {
+  my ($view) = @_;
+  verbose("\tWorking on view '${view}'");
+  my $ddl = _generate_view_ddl($view);
+  my $drop_ddl = _generate_drop_view_ddl($view);
+  $DBH->do("use $TARGET");
+  $DBH->do($ddl);
+  $DBH->do("use $DB");
+  verbose("\tDropping view from database '${DB}'");
+  $DBH->do($drop_ddl);
+	verbose("\tFinished view");
 	return;
 }
 
@@ -170,6 +193,39 @@ sub _drop_source {
 sub _generate_ddl {
   my ($table) = @_;
   return "rename table ${DB}.${table} to ${TARGET}.${table}";
+}
+
+sub _views {
+  my %views;
+  my $sth = $DBH->table_info( undef, $DB, '%', 'VIEW' );
+  while ( my $row = $sth->fetchrow_arrayref() ) {
+    $views{$row->[2]} = 1;
+  }
+  $sth->finish();
+  return %views;
+}
+
+sub _generate_view_ddl {
+  my ($view) = @_;
+  my $q_view = $DBH->quote_identifier($view);
+  my $sql = "SHOW CREATE TABLE ${q_view}";
+  my @row_ary = $DBH->selectrow_array($sql);
+  my ($view_name, $ddl) = @row_ary;
+  return _alter_view($ddl);
+}
+
+sub _generate_drop_view_ddl {
+  my ($view) = @_;
+  my $q_view = $DBH->quote_identifier($view);
+  return "DROP VIEW $q_view";
+}
+
+sub _alter_view {
+  my ($ddl) = @_;
+  verbose("\tRemoving DEFINER and setting SECURITY for view to INVOKER for portability");
+  $ddl =~ s/ DEFINER=[a-zA-Z0-9`@%]+ / /;
+  $ddl =~ s/SQL SECURITY DEFINER/SQL SECURITY INVOKER/;
+  return $ddl;
 }
 
 __END__
