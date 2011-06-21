@@ -160,6 +160,7 @@ sub _process_table {
       verbose("\tUsing mysqldump");
       _mysqldump_populate_table($table);
     }
+    _analyse($table);
     $source_info->{synced} = 1;
   }
   else {
@@ -226,7 +227,6 @@ sub _remove_view {
   }
   return;
 }
-
 
 #Assertion is based on a table count
 sub _assert_state {
@@ -403,6 +403,16 @@ sub _checksum {
   my $sql = "CHECKSUM TABLE ${q_table}";
   my @row_ary = $dbh->selectrow_array($sql);
   return pop @row_ary;
+}
+
+sub _analyse {
+  my ($table) = @_;
+  my $dbh = $TARGET_DBH;
+  verbose("\tRunning analyse");
+  my $q_table = $dbh->quote_identifier($table);
+  my $sql = "ANALYZE TABLE $q_table";
+  $dbh->do($sql);
+  return;
 }
 
 sub _drop_table {
