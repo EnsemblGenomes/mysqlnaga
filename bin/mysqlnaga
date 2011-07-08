@@ -226,7 +226,7 @@ sub _generate_select {
   } @columns);
   
   my $quoted_table = $DBH->quote_identifier($table);
-  return sprintf('select %s from %s', $column_names, $quoted_table);
+  return sprintf('SELECT SQL_NO_CACHE %s FROM %s', $column_names, $quoted_table);
 }
 
 sub _write_to_file {
@@ -308,7 +308,7 @@ sub _set_max_long_read_length {
     @binary_columns);
   
   my $read_length = $DBH->{LongReadLen};
-  my $sql = "select ${select_columns} from ${table}";
+  my $sql = "select SQL_NO_CACHE ${select_columns} from ${table}";
   my $sth = $DBH->prepare($sql);
   $sth->execute();
   while ( my $row = $sth->fetchrow_arrayref() ) {
