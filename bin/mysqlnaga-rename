@@ -192,7 +192,9 @@ sub _drop_source {
 
 sub _generate_ddl {
   my ($table) = @_;
-  return "rename table ${DB}.${table} to ${TARGET}.${table}";
+  my $source_table = $DBH->quote_identifier(undef, $DB, $table);
+  my $target_table = $DBH->quote_identifier(undef, $TARGET, $table);
+  return "rename table $source_table to $target_table";
 }
 
 sub _views {
