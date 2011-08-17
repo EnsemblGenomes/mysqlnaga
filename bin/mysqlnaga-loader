@@ -351,14 +351,17 @@ sub _generate_column_string {
   my @columns = @{_columns($table)};
   my @column_names;
   my @sets;
+  my $set_idx = 1;
   foreach my $col (@columns) {
+    my $quoted_column_name = $DBH->quote_indentifier($col->{name});
+     
     if(_is_column_binary($col)) {
-      my $var_name = '@'.$col->{name};
-      push(@sets, sprintf('%s = unhex(%s)', $col->{name}, $var_name));
+      my $var_name = sprintf('@binaryvar%d', $set_idx++);
+      push(@sets, sprintf('%s = unhex(%s)', $quoted_column_name, $var_name));
       push(@column_names, $var_name);
     }
     else {
-      push(@column_names, $col->{name});
+      push(@column_names, $quoted_column_name);
     }
   }
   
