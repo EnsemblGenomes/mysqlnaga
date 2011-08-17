@@ -164,8 +164,9 @@ sub _process_schema {
 
 sub _checksum_table {
   my ($dbh, $table) = @_;
+  my $q_table = $dbh->quote_identifier($table);
   my $checksum;
-  my $sql = "CHECKSUM TABLE $table extended";
+  my $sql = "CHECKSUM TABLE $q_table extended";
   my $sth = $dbh->prepare($sql);
   $sth->execute();
   if(my $row = $sth->fetchrow_arrayref()) {
