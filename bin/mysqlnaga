@@ -215,14 +215,14 @@ sub _generate_select {
   my @columns = @{_columns($table)};
   
   my $column_names = join(',',
-    map { $DBH->quote_identifier($_) } 
     map {
-      my $val; 
+      my $val;
+      my $name = $DBH->quote_identifier($_->{name});
       if(_is_column_binary($_)) {
-        $val = sprintf('HEX(%s)', $_->{name});
+        $val = sprintf('HEX(%s)', $name);
       }
       else {
-       $val = $_->{name}; 
+       $val = $name; 
       } 
       $val;
     } 
