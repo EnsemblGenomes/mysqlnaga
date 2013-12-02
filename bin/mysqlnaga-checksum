@@ -136,7 +136,7 @@ sub _open_dbh {
 		($details->[2])     ? $details->[2]         : undef,
 		($details->[3])     ? $details->[3]         : undef
 	);
-	my $dsn = "DBI:mysql:database=${DB}${hostname}${port}";
+	my $dsn = "DBI:mysql:database=${db}${hostname}${port}";
 	my $dbh = DBI->connect($dsn, $user, $password, {RaiseError => 1});
 	$dbh->do('use '.$db);
 	return $dbh;
