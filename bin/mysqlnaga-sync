@@ -98,7 +98,7 @@ sub process_db {
     verbose("\tLOADER-LOG.txt gone");
   }
   
-  verbose("Finished with database '${DB}'");
+  verbose("Finished with database '${DB}'");  
   
   return;
 }
@@ -151,6 +151,11 @@ sub _process_table {
       $drop_table = $src ne $trg ;
       $populate_table = $drop_table;
     }
+    #Populate always
+    elsif($OPTIONS->{force}) {
+      $drop_table = 1;
+      $populate_table = 1;
+    }    
     else {
       die 'You have not said how to compare these schemas. Check the help';
     }
@@ -274,6 +279,7 @@ sub _parse_options {
     directory=s
     database=s
     disable-foreign-keys
+    force
     host=s
     no-dump
     no-views
@@ -354,6 +360,7 @@ sub _open_dbh {
 	);
 	my $dsn = "DBI:mysql:database=${db}${hostname}${port}";
 	my $dbh = DBI->connect($dsn, $user, $password, {RaiseError => 1});
+	$dbh->do("SET FOREIGN_KEY_CHECKS = 0");
 	return $dbh;
 }
 
