@@ -573,6 +573,13 @@ SQL
 LOAD DATA INFILE '${filename}' INTO TABLE ${q_table}
 FIELDS ESCAPED BY '\\\\'
 SQL
+
+  if ( ! $TARGET_DBH->ping ) {
+    $TARGET_DBH = _open_dbh('target');
+    _switch_db($TARGET_DBH);
+    _toggle_foreign_key(0);
+  }
+
   $TARGET_DBH->do("LOCK TABLES ${q_table} WRITE");
   $TARGET_DBH->do($write_data_in_sql);
   $TARGET_DBH->do("UNLOCK TABLES");
