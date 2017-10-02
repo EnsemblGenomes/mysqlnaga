@@ -77,6 +77,7 @@ sub _process_view {
   my ($view) = @_;
   verbose("\tWorking on view '${view}'");
   my $ddl = _generate_view_ddl($view);
+  $ddl =~ s/$DB/$TARGET/g;
   my $drop_ddl = _generate_drop_view_ddl($view);
   $DBH->do("use $TARGET");
   $DBH->do($ddl);
